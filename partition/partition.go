@@ -42,6 +42,42 @@ func Read(br *boolcoder.Reader, ctx int, probs [16][3]uint8, counts *compheader.
 	return Type(br.ReadTreeCount(partitionTree, p, c))
 }
 
+// ReadForced reads a partition, forcing it at frame edges (libvpx read_partition):
+// a block extending past the bottom (no rows) reads one bit → SPLIT/HORZ; past
+// the right (no cols) → SPLIT/VERT; past both → SPLIT (no read). Otherwise the
+// full tree is read.
+func ReadForced(br *boolcoder.Reader, ctx int, probs [16][3]uint8, counts *compheader.Counts, hasRows, hasCols bool) Type {
+	p := probs[ctx][:]
+	var c [][2]uint32
+	if counts != nil {
+		c = counts.PartitionProbs[ctx][:]
+	}
+	if hasRows && hasCols {
+		return Type(br.ReadTreeCount(partitionTree, p, c))
+	}
+	if !hasRows && hasCols {
+		bit := br.ReadBool(p[1])
+		if c != nil {
+			c[1][bit]++
+		}
+		if bit == 1 {
+			return Split
+		}
+		return Horz
+	}
+	if hasRows && !hasCols {
+		bit := br.ReadBool(p[2])
+		if c != nil {
+			c[2][bit]++
+		}
+		if bit == 1 {
+			return Split
+		}
+		return Vert
+	}
+	return Split
+}
+
 // Context computes the partition context index (0..15) for a block at the
 // given MI-unit position.
 //
@@ -61,5 +97,5 @@ func Context(above, left bool, bsl int) int {
 	if left {
 		l = 1
 	}
-	return (l*2+a) + (bsl-1)*4
+	return (l*2 + a) + (bsl-1)*4
 }

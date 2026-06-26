@@ -8,13 +8,17 @@ import (
 )
 
 // trivialScan returns identity scan (raster order) for n positions.
-func trivialScan(n int) []int {
-	s := make([]int, n)
+func trivialScan(n int) []int16 {
+	s := make([]int16, n)
 	for i := range s {
-		s[i] = i
+		s[i] = int16(i)
 	}
 	return s
 }
+
+// trivialNb returns an all-zero neighbor table (every position's context
+// neighbors point at the DC position) of the size DecodeBlock expects.
+func trivialNb(n int) []int16 { return make([]int16, 2*(n+1)) }
 
 // encodeToken writes a minimal token bitstream via boolcoder.Writer.
 // Uses neutral probabilities (128) for writing so ReadBool(128) is unbiased.
@@ -61,7 +65,7 @@ func TestDecodeBlockAllZero(t *testing.T) {
 
 	// Use neutral (all-128) probs so they match what was written above.
 	probs := (*CoefProbs)(&compheader.NewProbs().CoefProbs)
-	out := DecodeBlock(br, TX4x4, 0, 0, trivialScan(16), 0, probs, nil)
+	out := DecodeBlock(br, TX4x4, 0, 0, trivialScan(16), trivialNb(16), 0, probs, nil)
 	for i, v := range out {
 		if v != 0 {
 			t.Fatalf("all-zero block: out[%d] = %d, want 0", i, v)
@@ -75,7 +79,7 @@ func TestDecodeBlockOne(t *testing.T) {
 	br := boolcoder.NewReader(bs)
 	// Use neutral (all-128) probs to match what writeToken wrote with.
 	probs := (*CoefProbs)(&compheader.NewProbs().CoefProbs)
-	out := DecodeBlock(br, TX4x4, 0, 0, trivialScan(16), 1, probs, nil)
+	out := DecodeBlock(br, TX4x4, 0, 0, trivialScan(16), trivialNb(16), 1, probs, nil)
 	if out[0] != 1 {
 		t.Fatalf("one token: out[0] = %d, want 1", out[0])
 	}
@@ -99,7 +103,7 @@ func TestBand4x4(t *testing.T) {
 	if band(TX4x4, 0) != 0 {
 		t.Fatalf("band(4x4, 0) = %d, want 0", band(TX4x4, 0))
 	}
-	if band(TX4x4, 15) != 3 {
-		t.Fatalf("band(4x4, 15) = %d, want 3", band(TX4x4, 15))
+	if band(TX4x4, 15) != 5 {
+		t.Fatalf("band(4x4, 15) = %d, want 5", band(TX4x4, 15))
 	}
 }

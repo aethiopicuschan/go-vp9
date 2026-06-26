@@ -1,5 +1,18 @@
 package loopfilter
 
+import (
+	"fmt"
+	"io"
+)
+
+// DumpW/DumpPlane: debug edge-trace hook. When DumpW != nil, FilterFrame writes
+// one line per filtered edge ("<plane> <V|H> <y> <x> <width>") to compare the
+// edge-selection against libvpx's instrumented loop filter.
+var (
+	DumpW     io.Writer
+	DumpPlane int
+)
+
 // FilterPlane applies the VP9 loop filter to one luma or chroma plane.
 //
 // Each 4x4 block's edge is filtered with the given Params. For simplicity
@@ -18,8 +31,9 @@ package loopfilter
 // stride – row stride in bytes (may be > width).
 // width, height – plane dimensions in pixels.
 // bsLog2 – log2 of the superblock size in pixels (2=4px blocks, 3=8px…).
-//           Controls whether the wider 8/14-tap filters are engaged.
-//           Pass 2 for chroma or for simple filter mode.
+//
+//	Controls whether the wider 8/14-tap filters are engaged.
+//	Pass 2 for chroma or for simple filter mode.
 func FilterPlane(buf []byte, stride, width, height, bsLog2 int, p Params) {
 	bs := 1 << bsLog2 // block size in pixels (4, 8, 16, 32)
 
@@ -96,4 +110,109 @@ func edgeWidth(pos, bsLog2 int) int {
 		}
 	}
 	return 4
+}
+
+// txWidth maps a transform size to the loop-filter kernel width (libvpx caps at
+// 16: TX_32X32 also uses the 16-wide filter via vp9_adjust_mask).
+func txWidth(txSize uint8) int {
+	switch txSize {
+	case 0:
+		return 4
+	case 1:
+		return 8
+	default:
+		return 16
+	}
+}
+
+// FilterFrame applies the VP9 loop filter to one plane in libvpx's order:
+// superblock by superblock (raster), and within each SB ALL vertical edges then
+// ALL horizontal edges. sbN4 is the superblock size in 4×4 units for this plane
+// (16 for luma 64-px SBs, 8 for 4:2:0 chroma). This matters at SB boundaries,
+// where a later SB's vertical edge reads the previous SB's already
+// horizontally-filtered pixels. infoAt(r4,c4) returns the block's loop-filter
+// level and transform size (for this plane) covering 4×4 (r4,c4).
+//
+// An edge at the left/top of (r4,c4) is on a transform boundary iff the
+// coordinate is a multiple of the block's TX size in 4×4 units (that subsumes
+// prediction-block boundaries).
+func FilterFrame(buf []byte, stride, w4, h4, sbN4, sharpness int,
+	infoAt func(r4, c4 int) (level int, txSize uint8, skipLF, predH, predV bool)) {
+
+	for sbR := 0; sbR < h4; sbR += sbN4 {
+		for sbC := 0; sbC < w4; sbC += sbN4 {
+			rEnd := sbR + sbN4
+			if rEnd > h4 {
+				rEnd = h4
+			}
+			cEnd := sbC + sbN4
+			if cEnd > w4 {
+				cEnd = w4
+			}
+
+			// Vertical edges of this SB.
+			for c4 := sbC; c4 < cEnd; c4++ {
+				if c4 == 0 {
+					continue
+				}
+				for r4 := sbR; r4 < rEnd; r4++ {
+					level, txSize, skipLF, _, predV := infoAt(r4, c4)
+					if level == 0 || c4&((1<<txSize)-1) != 0 {
+						continue
+					}
+					// A skipped inter block only sets the prediction-block boundary
+					// mask (libvpx build_masks returns before the TX / internal-4×4
+					// masks); internal transform edges are not filtered.
+					if skipLF && !predV {
+						continue
+					}
+					p := ParamsForLevel(level, sharpness)
+					w := txWidth(txSize)
+					// libvpx vp9_adjust_mask: a TX_4X4 edge on a 32-px grid line
+					// (left_border) is promoted to an 8-tap filter ("at least 8 tap
+					// on every 32x32"). c4%8==0 ⇒ pixel col is a multiple of 32.
+					if txSize == 0 && c4%8 == 0 {
+						w = 8
+					}
+					if DumpW != nil {
+						fmt.Fprintf(DumpW, "%d V %d %d %d\n", DumpPlane, r4*4, c4*4, w)
+					}
+					base := r4*4*stride + c4*4
+					for i := 0; i < 4; i++ {
+						FilterEdge4(buf, base+i*stride, 1, w, p)
+					}
+				}
+			}
+
+			// Horizontal edges of this SB.
+			for r4 := sbR; r4 < rEnd; r4++ {
+				if r4 == 0 {
+					continue
+				}
+				for c4 := sbC; c4 < cEnd; c4++ {
+					level, txSize, skipLF, predH, _ := infoAt(r4, c4)
+					if level == 0 || r4&((1<<txSize)-1) != 0 {
+						continue
+					}
+					if skipLF && !predH {
+						continue
+					}
+					p := ParamsForLevel(level, sharpness)
+					w := txWidth(txSize)
+					// libvpx vp9_adjust_mask above_border: TX_4X4 horizontal edge on
+					// a 32-px grid line is promoted to an 8-tap filter.
+					if txSize == 0 && r4%8 == 0 {
+						w = 8
+					}
+					if DumpW != nil {
+						fmt.Fprintf(DumpW, "%d H %d %d %d\n", DumpPlane, r4*4, c4*4, w)
+					}
+					base := r4*4*stride + c4*4
+					for i := 0; i < 4; i++ {
+						FilterEdge4(buf, base+i, stride, w, p)
+					}
+				}
+			}
+		}
+	}
 }

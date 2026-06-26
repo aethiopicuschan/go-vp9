@@ -30,7 +30,7 @@ func TestNewRowOddWidth(t *testing.T) {
 }
 
 func TestNewColN4(t *testing.T) {
-	c := NewCol()
+	c := NewCol(16)
 	if c.N4 != 16 {
 		t.Fatalf("Col N4: got %d, want 16", c.N4)
 	}
@@ -158,20 +158,20 @@ func TestSkipCtxNone(t *testing.T) {
 
 func TestTxSizeCtxBothLarge(t *testing.T) {
 	// Both >= maxTx: would be 2 but clamped to 1.
-	if got := TxSizeCtx(true, true, TX32x32, TX32x32, TX32x32); got != 1 {
+	if got := TxSizeCtx(true, true, false, false, TX32x32, TX32x32, TX32x32); got != 1 {
 		t.Fatalf("both large: got %d, want 1", got)
 	}
 }
 
 func TestTxSizeCtxOneLarge(t *testing.T) {
-	if got := TxSizeCtx(true, true, TX32x32, TX8x8, TX32x32); got != 1 {
+	if got := TxSizeCtx(true, true, false, false, TX32x32, TX8x8, TX32x32); got != 1 {
 		t.Fatalf("one large: got %d, want 1", got)
 	}
 }
 
 func TestTxSizeCtxNoneAvail(t *testing.T) {
-	if got := TxSizeCtx(false, false, TX32x32, TX32x32, TX32x32); got != 0 {
-		t.Fatalf("none avail: got %d, want 0", got)
+	if got := TxSizeCtx(false, false, false, false, TX32x32, TX32x32, TX32x32); got != 1 {
+		t.Fatalf("none avail: got %d, want 1", got)
 	}
 }
 

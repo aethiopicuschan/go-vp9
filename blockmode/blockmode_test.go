@@ -78,9 +78,9 @@ func TestDecodeSkipTrue(t *testing.T) {
 	data := encodeIntraBlock(true, modeinfo.DC, modeinfo.DC)
 	br := boolcoder.NewReader(data)
 	row := ctx.NewRow(64)
-	col := ctx.NewCol()
+	col := ctx.NewCol(16)
 
-	bm := Decode(br, probs, nil, fi, row, col, 4, 4, 2, 2) // 8×8 block
+	bm := Decode(br, probs, nil, fi, row, col, 4, 4, 2, 2, Sub8x8None, nil, nil) // 8×8 block
 	if !bm.Skip {
 		t.Fatal("expected skip=true")
 	}
@@ -94,9 +94,9 @@ func TestDecodeSkipFalse(t *testing.T) {
 	data := encodeIntraBlock(false, modeinfo.DC, modeinfo.DC)
 	br := boolcoder.NewReader(data)
 	row := ctx.NewRow(64)
-	col := ctx.NewCol()
+	col := ctx.NewCol(16)
 
-	bm := Decode(br, probs, nil, fi, row, col, 4, 4, 2, 2)
+	bm := Decode(br, probs, nil, fi, row, col, 4, 4, 2, 2, Sub8x8None, nil, nil)
 	if bm.Skip {
 		t.Fatal("expected skip=false")
 	}
@@ -112,9 +112,9 @@ func TestDecodeYModeDC(t *testing.T) {
 	data := encodeIntraBlock(false, modeinfo.DC, modeinfo.DC)
 	br := boolcoder.NewReader(data)
 	row := ctx.NewRow(64)
-	col := ctx.NewCol()
+	col := ctx.NewCol(16)
 
-	bm := Decode(br, probs, nil, fi, row, col, 0, 0, 2, 2)
+	bm := Decode(br, probs, nil, fi, row, col, 0, 0, 2, 2, Sub8x8None, nil, nil)
 	if bm.YMode != modeinfo.DC {
 		t.Fatalf("YMode: got %v, want DC", bm.YMode)
 	}
@@ -131,9 +131,9 @@ func TestDecodeYModeV(t *testing.T) {
 	data := encodeIntraBlock(false, modeinfo.V, modeinfo.H)
 	br := boolcoder.NewReader(data)
 	row := ctx.NewRow(64)
-	col := ctx.NewCol()
+	col := ctx.NewCol(16)
 
-	bm := Decode(br, probs, nil, fi, row, col, 0, 0, 2, 2)
+	bm := Decode(br, probs, nil, fi, row, col, 0, 0, 2, 2, Sub8x8None, nil, nil)
 	if bm.YMode != modeinfo.V {
 		t.Fatalf("YMode: got %v, want V", bm.YMode)
 	}
@@ -158,9 +158,9 @@ func TestDecodeTxSizeSelect8x8(t *testing.T) {
 
 	br := boolcoder.NewReader(w.Bytes())
 	row := ctx.NewRow(64)
-	col := ctx.NewCol()
+	col := ctx.NewCol(16)
 
-	bm := Decode(br, probs, nil, fi, row, col, 0, 0, 2, 2) // bsLog2=1 → maxTx=TX8x8
+	bm := Decode(br, probs, nil, fi, row, col, 0, 0, 2, 2, Sub8x8None, nil, nil) // bsLog2=1 → maxTx=TX8x8
 	if bm.TxSize != ctx.TX8x8 {
 		t.Fatalf("TxSize: got %d, want TX8x8=%d", bm.TxSize, ctx.TX8x8)
 	}
@@ -179,9 +179,9 @@ func TestDecodeTxSizeSelect4x4(t *testing.T) {
 
 	br := boolcoder.NewReader(w.Bytes())
 	row := ctx.NewRow(64)
-	col := ctx.NewCol()
+	col := ctx.NewCol(16)
 
-	bm := Decode(br, probs, nil, fi, row, col, 0, 0, 2, 2)
+	bm := Decode(br, probs, nil, fi, row, col, 0, 0, 2, 2, Sub8x8None, nil, nil)
 	if bm.TxSize != ctx.TX4x4 {
 		t.Fatalf("TxSize: got %d, want TX4x4=%d", bm.TxSize, ctx.TX4x4)
 	}
@@ -197,9 +197,9 @@ func TestDecodeKeyframeAlwaysIntra(t *testing.T) {
 	data := encodeIntraBlock(false, modeinfo.DC, modeinfo.DC)
 	br := boolcoder.NewReader(data)
 	row := ctx.NewRow(64)
-	col := ctx.NewCol()
+	col := ctx.NewCol(16)
 
-	bm := Decode(br, probs, nil, fi, row, col, 0, 0, 4, 4) // 16×16 block
+	bm := Decode(br, probs, nil, fi, row, col, 0, 0, 4, 4, Sub8x8None, nil, nil) // 16×16 block
 	if bm.IsInter {
 		t.Fatal("keyframe block should always be intra")
 	}
@@ -246,7 +246,8 @@ func TestCompModeCtxNoNeighbours(t *testing.T) {
 	got := CompModeCtx(fi, false, false,
 		[2]int{ctx.RefIntra, ctx.RefIntra}, [2]int{ctx.RefIntra, ctx.RefIntra},
 		false, false)
-	if got != 0 {
-		t.Fatalf("no neighbours: got %d, want 0", got)
+	// libvpx vp9_get_reference_mode_context: no edges available → ctx 1.
+	if got != 1 {
+		t.Fatalf("no neighbours: got %d, want 1", got)
 	}
 }

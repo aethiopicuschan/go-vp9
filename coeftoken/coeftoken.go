@@ -8,10 +8,54 @@ import (
 	"github.com/mgvs/go-vp9/compheader"
 )
 
+// ScanType selects the coefficient scan pattern for a TX block.
+const (
+	ScanDefault = 0 // diagonal (DCT_DCT, ADST_ADST)
+	ScanRow     = 1 // row scan (DCT_ADST)
+	ScanCol     = 2 // col scan (ADST_DCT)
+)
+
+// ScanOrder returns the scan-position→raster table and the matching neighbor
+// table for a given TX size (0=4×4 … 3=32×32) and scan pattern. TX32x32 always
+// uses the diagonal scan.
+func ScanOrder(txSize, scanType int) (scan, nb []int16) {
+	switch txSize {
+	case 0:
+		switch scanType {
+		case ScanRow:
+			return rowScan4x4, rowScanNb4x4
+		case ScanCol:
+			return colScan4x4, colScanNb4x4
+		default:
+			return defaultScan4x4, defaultScanNb4x4
+		}
+	case 1:
+		switch scanType {
+		case ScanRow:
+			return rowScan8x8, rowScanNb8x8
+		case ScanCol:
+			return colScan8x8, colScanNb8x8
+		default:
+			return defaultScan8x8, defaultScanNb8x8
+		}
+	case 2:
+		switch scanType {
+		case ScanRow:
+			return rowScan16x16, rowScanNb16x16
+		case ScanCol:
+			return colScan16x16, colScanNb16x16
+		default:
+			return defaultScan16x16, defaultScanNb16x16
+		}
+	default:
+		return defaultScan32x32, defaultScanNb32x32
+	}
+}
+
 // TX size indices (matching compheader.txSizes).
 const (
-	TX4x4  = 0
-	TX8x8  = 1
+	TX4x4   = 0
+	TX8x8   = 1
 	TX16x16 = 2
 	TX32x32 = 3
 )
@@ -62,34 +106,70 @@ func readMoreThanOne(br *boolcoder.Reader) int {
 			cat = 1
 		}
 	}
-	// Read extra bits MSB-first with category probabilities.
-	val := catBase[cat]
+	// Read extra bits MSB-first with category probabilities, then add the
+	// category base. The extra bits form an unsigned offset; catBase[cat] is the
+	// smallest value in the category (spec §8.6.1.3 / libvpx read_coeff).
+	extra := 0
 	for _, p := range catProbs[cat] {
-		val = (val << 1) | br.ReadBool(p)
+		extra = (extra << 1) | br.ReadBool(p)
 	}
-	return val
+	return catBase[cat] + extra
 }
 
 // ---- band tables (spec §8.6.1.1) -------------------------------------------
 
-// Band assignment for 4×4 (indexed by scan position 0..15).
-var band4 = [16]uint8{0, 1, 1, 2, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3}
+// coefband4 maps a 4×4 scan position to its coefficient band (libvpx
+// vp9_coefband_trans_4x4).
+var coefband4 = [16]uint8{
+	0, 1, 1, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 5, 5, 5,
+}
 
-// Band assignment for 8×8 and larger (indexed by scan position).
-// VP9 uses the same table for 8×8, 16×16, 32×32 (only first 64/256/1024 entries used).
-var bandLarge [1025]uint8
-
-func init() {
-	// band k covers 5*2^(k-1) positions for k>0; band 0 = DC only.
-	// For N=64/256/1024: band[0]=0, bands 1-5 distributed.
-	breaks := [7]int{0, 1, 2, 3, 6, 11, 1025}
-	b := uint8(0)
-	for i := 0; i < 1025; i++ {
-		if int(b) < 6 && i >= breaks[b+1] {
-			b++
-		}
-		bandLarge[i] = b
-	}
+// coefband8plus maps an 8×8/16×16/32×32 scan position to its band (libvpx
+// vp9_coefband_trans_8x8plus). Indices beyond 1024 clamp to band 5.
+var coefband8plus = [1024]uint8{
+	0, 1, 1, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
 }
 
 // band returns the coef band for coefficient scan position c in txSize.
@@ -98,12 +178,12 @@ func band(txSize, c int) uint8 {
 		if c >= 16 {
 			return 5
 		}
-		return band4[c]
+		return coefband4[c]
 	}
-	if c >= 1025 {
+	if c >= 1024 {
 		return 5
 	}
-	return bandLarge[c]
+	return coefband8plus[c]
 }
 
 // ---- context calculation (spec §8.6.1.2) ------------------------------------
@@ -127,29 +207,43 @@ func prevCtx(prevVal int) int {
 // [txSize][planeType][refType][band][ctx][3 nodes]
 type CoefProbs = [4][2][2][6][6][3]uint8
 
-// DecodeBlock reads quantized coefficients for one transform block.
-// Parameters:
+// getCoefContext computes the coefficient probability context for position c>0
+// from the two scan neighbors' token energy classes (libvpx get_coef_context):
+// (1 + tokenCache[nb0] + tokenCache[nb1]) >> 1.
+func getCoefContext(nb []int16, tokenCache []uint8, c int) int {
+	return (1 + int(tokenCache[nb[2*c]]) + int(tokenCache[nb[2*c+1]])) >> 1
+}
+
+// readCoeffExtra reads n extra bits MSB-first with the given category probs and
+// returns the unsigned offset (libvpx read_coeff).
+func readCoeffExtra(br *boolcoder.Reader, probs []uint8) int {
+	val := 0
+	for _, p := range probs {
+		val = (val << 1) | br.ReadBool(p)
+	}
+	return val
+}
+
+// DecodeBlock reads quantized coefficients for one transform block, faithfully
+// porting libvpx decode_coefs (spec §8.6.1). Returns coefficients in raster order.
 //
-//	br        – positioned at the first bit of the coefficient data
-//	txSize    – TX4x4..TX32x32
-//	planeType – 0=luma, 1=chroma
-//	refType   – 0=intra, 1=inter
-//	scan      – scan order table (len ≥ nCoefs(txSize))
-//	initCtx   – initial context for position 0 (0, 1, or 2; from above/left blocks)
-//	probs     – coefficient probability tables
+//	scan      – scan-position → raster-index table for this txSize/txType
+//	nb        – matching neighbor table (2 entries per scan position + pad)
+//	initCtx   – context for position 0 (0/1/2 from above/left nonzero context)
 //
-// Returns the decoded coefficient array in raster order (scan de-applied).
-// All-zero return means "skip" (every coef was zero or EOB at position 0).
+// All-zero return means EOB at position 0.
 func DecodeBlock(br *boolcoder.Reader, txSize, planeType, refType int,
-	scan []int, initCtx int, probs *CoefProbs, counts *compheader.Counts) []int16 {
+	scan, nb []int16, initCtx int, probs *CoefProbs, counts *compheader.Counts) []int16 {
 
 	n := nCoefs(txSize)
 	out := make([]int16, n)
-	ctx := initCtx
+	tokenCache := make([]uint8, n)
 	pt := planeType
 	rt := refType
+	ctx := initCtx
 
-	for c := 0; c < n; c++ {
+	c := 0
+	for c < n {
 		bd := int(band(txSize, c))
 		if bd > 5 {
 			bd = 5
@@ -158,43 +252,85 @@ func DecodeBlock(br *boolcoder.Reader, txSize, planeType, refType int,
 		if ctxIdx > 5 {
 			ctxIdx = 5
 		}
-		p := probs[txSize][pt][rt][bd][ctxIdx]
+		p := &probs[txSize][pt][rt][bd][ctxIdx]
 
-		// Node 0: EOB?
-		eob := br.ReadBool(p[0])
-		if counts != nil {
-			counts.CoefProbs[txSize][pt][rt][bd][ctxIdx][0][eob]++
-		}
-		if eob == 0 {
+		// EOB node: 0 → end of block.
+		if br.ReadBool(p[0]) == 0 {
 			break
 		}
-		// Node 1: ZERO?
-		zero := br.ReadBool(p[1])
-		if counts != nil {
-			counts.CoefProbs[txSize][pt][rt][bd][ctxIdx][1][zero]++
+
+		// ZERO loop: consume runs of zero tokens; each skips re-reading the EOB
+		// node for the next position (libvpx inner while).
+		for br.ReadBool(p[1]) == 0 {
+			tokenCache[scan[c]] = 0
+			c++
+			if c >= n {
+				return out
+			}
+			ctx = getCoefContext(nb, tokenCache, c)
+			bd = int(band(txSize, c))
+			if bd > 5 {
+				bd = 5
+			}
+			ctxIdx = ctx
+			if ctxIdx > 5 {
+				ctxIdx = 5
+			}
+			p = &probs[txSize][pt][rt][bd][ctxIdx]
 		}
-		if zero == 0 {
-			ctx = prevCtx(0)
-			continue
-		}
-		// Node 2: ONE vs MORE?
+
+		// Non-zero token: decode value + energy class.
 		var val int
-		one := br.ReadBool(p[2])
-		if counts != nil {
-			counts.CoefProbs[txSize][pt][rt][bd][ctxIdx][2][one]++
-		}
-		if one == 0 {
+		var energy uint8
+		if br.ReadBool(p[2]) == 0 {
 			val = 1
+			energy = 1
 		} else {
-			val = readMoreThanOne(br)
+			pp := &pareto8Full[p[2]-1]
+			if br.ReadBool(pp[0]) == 1 {
+				// CAT tokens (val ≥ 5).
+				if br.ReadBool(pp[3]) == 1 {
+					energy = 5
+					if br.ReadBool(pp[5]) == 1 {
+						if br.ReadBool(pp[7]) == 1 {
+							val = catBase[5] + readCoeffExtra(br, catProbs[5]) // CAT6
+						} else {
+							val = catBase[4] + readCoeffExtra(br, catProbs[4]) // CAT5
+						}
+					} else if br.ReadBool(pp[6]) == 1 {
+						val = catBase[3] + readCoeffExtra(br, catProbs[3]) // CAT4
+					} else {
+						val = catBase[2] + readCoeffExtra(br, catProbs[2]) // CAT3
+					}
+				} else {
+					energy = 4
+					if br.ReadBool(pp[4]) == 1 {
+						val = catBase[1] + readCoeffExtra(br, catProbs[1]) // CAT2
+					} else {
+						val = catBase[0] + readCoeffExtra(br, catProbs[0]) // CAT1
+					}
+				}
+			} else {
+				// Values 2, 3, 4.
+				if br.ReadBool(pp[1]) == 1 {
+					energy = 3
+					val = 3 + br.ReadBool(pp[2]) // 3 or 4
+				} else {
+					energy = 2
+					val = 2
+				}
+			}
 		}
-		// Sign bit (0=positive, 1=negative)
+		// Sign bit.
 		if br.ReadBit() == 1 {
 			val = -val
 		}
-		rasterIdx := scan[c]
-		out[rasterIdx] = int16(val)
-		ctx = prevCtx(val)
+		out[scan[c]] = int16(val)
+		tokenCache[scan[c]] = energy
+		c++
+		if c < n {
+			ctx = getCoefContext(nb, tokenCache, c)
+		}
 	}
 	return out
 }

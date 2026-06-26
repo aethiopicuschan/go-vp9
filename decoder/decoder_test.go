@@ -78,7 +78,7 @@ func TestResolveMVsZeroMV(t *testing.T) {
 		CompVarRef:    [2]int{ctx.RefLast, ctx.RefGolden},
 	}
 	row := ctx.NewRow(64)
-	col := ctx.NewCol()
+	col := ctx.NewCol(16)
 
 	mv0, _ := d.resolveMVs(bmo, fi, row, col, 4, 4, 2, 2)
 	if mv0 != (mv.MV{}) {
@@ -112,7 +112,7 @@ func TestResolveMVsNearestFromAbove(t *testing.T) {
 		CompVarRef:    [2]int{ctx.RefLast, ctx.RefGolden},
 	}
 	row := ctx.NewRow(64)
-	col := ctx.NewCol()
+	col := ctx.NewCol(16)
 
 	mv0, _ := d.resolveMVs(bmo, fi, row, col, 4, 4, 2, 2)
 	if mv0 != wantMV {

@@ -66,8 +66,8 @@ func buildKeyFrame(w, h int) []byte {
 	bw.writeBits(16, uint32(w-1))
 	bw.writeBits(16, uint32(h-1))
 
-	// render_size: render_and_frame_size_equal_flag=1 → render dims = frame dims
-	bw.writeBit(1)
+	// render_size: render_and_frame_size_different=0 → render dims = frame dims
+	bw.writeBit(0)
 
 	// After frame-type block: refresh_frame_context + frame_parallel_decoding_mode
 	// (only when !error_resilient, which is our case)
@@ -229,7 +229,7 @@ func buildKeyFrameWithQ(baseQ, deltaYDC, deltaUVDC, deltaUVAC int) []byte {
 
 	bw.writeBits(16, 63) // width-1 = 64
 	bw.writeBits(16, 47) // height-1 = 48
-	bw.writeBit(1)       // render_and_frame_size_equal_flag=1
+	bw.writeBit(0)       // render_and_frame_size_different=0 (render = frame)
 
 	bw.writeBit(0) // refresh_frame_context
 	bw.writeBit(1) // frame_parallel_decoding_mode

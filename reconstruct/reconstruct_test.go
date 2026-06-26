@@ -139,7 +139,7 @@ func TestBlockIntraDCSkip(t *testing.T) {
 	}
 
 	row := ctx.NewRow(w)
-	col := ctx.NewCol()
+	col := ctx.NewCol(16)
 
 	Block(br, probs, nil, bm, false,
 		mv.MV{}, mv.MV{},

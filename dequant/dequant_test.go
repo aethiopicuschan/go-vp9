@@ -22,7 +22,7 @@ func TestACQuantBoundary(t *testing.T) {
 
 func TestDequantBlock(t *testing.T) {
 	coeffs := []int16{3, 2, -1, 0}
-	DequantBlock(coeffs, 10, 8)
+	DequantBlock(coeffs, 10, 8, 0)
 	// dc: 3*10=30; ac: 2*8=16, -1*8=-8, 0*8=0
 	want := []int16{30, 16, -8, 0}
 	for i, v := range coeffs {
@@ -34,7 +34,7 @@ func TestDequantBlock(t *testing.T) {
 
 func TestDequantBlockClamp(t *testing.T) {
 	coeffs := []int16{32767, 32767}
-	DequantBlock(coeffs, 2, 2)
+	DequantBlock(coeffs, 2, 2, 0)
 	// 32767 * 2 = 65534 > 32767 → clamp to 32767
 	if coeffs[0] != 32767 {
 		t.Fatalf("clamp dc: got %d, want 32767", coeffs[0])

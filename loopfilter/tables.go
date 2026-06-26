@@ -22,26 +22,26 @@ func ParamsForLevel(level, sharpness int) Params {
 	if sharpness > 7 {
 		sharpness = 7
 	}
-	lim := int(limLUT[level])
+	// libvpx update_sharpness: limit = level >> ((sharp>0)+(sharp>4)), capped at
+	// 9-sharpness and ≥1; blimit = 2*(level+2)+limit; thresh = level>>4.
+	shift := 0
 	if sharpness > 0 {
-		// Reduce limit for higher sharpness (§8.8.3).
-		if sharpness > 4 {
-			lim >>= 2
-		} else {
-			lim >>= 1
-		}
-		max := 9 - sharpness
-		if lim > max {
-			lim = max
-		}
+		shift++
+	}
+	if sharpness > 4 {
+		shift++
+	}
+	lim := level >> shift
+	if sharpness > 0 && lim > 9-sharpness {
+		lim = 9 - sharpness
 	}
 	if lim < 1 {
 		lim = 1
 	}
 	return Params{
 		Limit:  uint8(lim),
-		BLimit: uint8(2*level + lim),
-		Thresh: threshLUT[level],
+		BLimit: uint8(2*(level+2) + lim),
+		Thresh: uint8(level >> 4),
 	}
 }
 
@@ -88,20 +88,4 @@ func LevelForBlock(
 		}
 	}
 	return level
-}
-
-// limLUT[level] — inner flatness limit per filter level (libvpx loop_filter_info_n).
-var limLUT = [64]uint8{
-	0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-	1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3,
-	3, 4, 4, 4, 4, 4, 4, 4, 6, 6, 6, 6, 6, 6, 6, 6,
-	8, 8, 8, 8, 8, 8, 8, 8, 10, 10, 10, 10, 12, 12, 14, 16,
-}
-
-// threshLUT[level] — HEV threshold per filter level.
-var threshLUT = [64]uint8{
-	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-	0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1,
 }

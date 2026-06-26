@@ -35,15 +35,13 @@ func TestIDCT4DC(t *testing.T) {
 }
 
 func TestIDCT4Known(t *testing.T) {
-	// Hand-computed: idct4([1,2,3,4])
-	// a = b = (1+3)*11585 = 46340; c = 2*6270-4*15137 = -48008; d = 2*15137+4*6270 = 55354
-	// io[0]=drs(46340+55354)=drs(101694)=6
-	// io[1]=drs(46340-55354+0-48008)=drs(-71178)=-4  (b+c with b=-23170)
-	// io[2]=drs(-23170+48008)=drs(24838)=2
-	// io[3]=drs(46340-55354)=drs(-9014)=-1
+	// Hand-computed against libvpx idct4_c (drs each stage-1 term separately):
+	// s0=drs(4*11585)=3, s1=drs(-2*11585)=-1, s2=drs(2*6270-4*15137)=-3,
+	// s3=drs(2*15137+4*6270)=3
+	// out[0]=s0+s3=6, out[1]=s1+s2=-4, out[2]=s1-s2=2, out[3]=s0-s3=0
 	io := []int16{1, 2, 3, 4}
 	idct4(io)
-	want := [4]int16{6, -4, 2, -1}
+	want := [4]int16{6, -4, 2, 0}
 	for i, v := range io {
 		if v != want[i] {
 			t.Fatalf("idct4[%d] = %d, want %d", i, v, want[i])
@@ -95,19 +93,20 @@ func TestIDCT32DC(t *testing.T) {
 
 // ---- 2-D transforms ---------------------------------------------------------
 
-// For any block size, 2D DCT_DCT with DC=1024 only:
-//   row pass: [1024,0,...] → uniform 724 → >>4 → 45
-//   col pass: [45,0,...] → uniform 32 → >>4 → 2
-func Test2D_DCT_DC_4(t *testing.T)  { test2DDC(t, 4) }
-func Test2D_DCT_DC_8(t *testing.T)  { test2DDC(t, 8) }
-func Test2D_DCT_DC_16(t *testing.T) { test2DDC(t, 16) }
-func Test2D_DCT_DC_32(t *testing.T) { test2DDC(t, 32) }
+// For any block size, 2D DCT_DCT with DC=1024 only (libvpx vpx_idctNxN_1_add):
+//   out = drs(1024·cp16) = 724;  out = drs(724·cp16) = 512;
+//   result = ROUND_POWER_OF_TWO(512, FinalShift(bs)).
+// FinalShift = 4/5/6/6 → result = 32/16/8/8 for bs = 4/8/16/32.
+func Test2D_DCT_DC_4(t *testing.T)  { test2DDC(t, 4, 32) }
+func Test2D_DCT_DC_8(t *testing.T)  { test2DDC(t, 8, 16) }
+func Test2D_DCT_DC_16(t *testing.T) { test2DDC(t, 16, 8) }
+func Test2D_DCT_DC_32(t *testing.T) { test2DDC(t, 32, 8) }
 
-func test2DDC(t *testing.T, bs int) {
+func test2DDC(t *testing.T, bs int, want int16) {
 	t.Helper()
 	c := makeCoeffs(bs, 1024)
 	InvTransform2D(c, bs, DCT_DCT)
-	allEqual(t, "2d dct dc=1024 bs="+itoa(bs), c, 2)
+	allEqual(t, "2d dct dc=1024 bs="+itoa(bs), c, want)
 }
 
 // ---- ADST 1-D: zero and symmetry checks ------------------------------------

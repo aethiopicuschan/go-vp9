@@ -14,17 +14,83 @@ func ACQuant(qIndex int) int16 {
 	return acQLookup[clampQIndex(qIndex)]
 }
 
+// DCQuantBD / ACQuantBD return the quantizer step for a given bit depth (8/10/12)
+// — libvpx vp9_dc_quant / vp9_ac_quant switch on bit_depth.
+func DCQuantBD(qIndex, bitDepth int) int16 {
+	q := clampQIndex(qIndex)
+	switch bitDepth {
+	case 10:
+		return dcQLookup10[q]
+	case 12:
+		return dcQLookup12[q]
+	default:
+		return dcQLookup[q]
+	}
+}
+
+func ACQuantBD(qIndex, bitDepth int) int16 {
+	q := clampQIndex(qIndex)
+	switch bitDepth {
+	case 10:
+		return acQLookup10[q]
+	case 12:
+		return acQLookup12[q]
+	default:
+		return acQLookup[q]
+	}
+}
+
 // DequantBlock applies dequantization to a bs×bs int16 coefficient block
 // (row-major, zigzag un-done by caller). The first coefficient (DC) is
-// multiplied by dc; all others are multiplied by ac.
-func DequantBlock(coeffs []int16, dc, ac int16) {
+// multiplied by dc; all others by ac. dqShift is libvpx's per-TX dq_shift —
+// 1 for TX_32X32, else 0 — applied to the magnitude (|coeff|*q) >> dqShift
+// before re-applying the sign (libvpx: v = (val * dqv) >> dq_shift, val ≥ 0).
+func DequantBlock(coeffs []int16, dc, ac int16, dqShift int) {
 	if len(coeffs) == 0 {
 		return
 	}
-	coeffs[0] = clamp16(int32(coeffs[0]) * int32(dc))
+	coeffs[0] = dequant1(coeffs[0], dc, dqShift)
 	for i := 1; i < len(coeffs); i++ {
-		coeffs[i] = clamp16(int32(coeffs[i]) * int32(ac))
+		coeffs[i] = dequant1(coeffs[i], ac, dqShift)
 	}
+}
+
+func dequant1(v, q int16, dqShift int) int16 {
+	p := int32(v) * int32(q)
+	if dqShift > 0 {
+		if p < 0 {
+			p = -((-p) >> uint(dqShift))
+		} else {
+			p >>= uint(dqShift)
+		}
+	}
+	return clamp16(p)
+}
+
+// DequantBlock16 is DequantBlock for the high-bit-depth (10/12-bit) int32 path.
+// dc/ac come from DCQuantBD/ACQuantBD; the result is NOT clamped to int16 (10/12-
+// bit dequantized coefficients exceed int16 — libvpx highbd_check_range is a
+// no-op; the bit-depth clamp happens in the highbd inverse transform).
+func DequantBlock16(coeffs []int64, dc, ac int16, dqShift int) {
+	if len(coeffs) == 0 {
+		return
+	}
+	coeffs[0] = dequant1_16(coeffs[0], dc, dqShift)
+	for i := 1; i < len(coeffs); i++ {
+		coeffs[i] = dequant1_16(coeffs[i], ac, dqShift)
+	}
+}
+
+func dequant1_16(v int64, q int16, dqShift int) int64 {
+	p := v * int64(q)
+	if dqShift > 0 {
+		if p < 0 {
+			p = -((-p) >> uint(dqShift))
+		} else {
+			p >>= uint(dqShift)
+		}
+	}
+	return p
 }
 
 func clampQIndex(q int) int {

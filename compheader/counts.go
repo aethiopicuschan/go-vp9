@@ -35,43 +35,54 @@ type Counts struct {
 // AdaptProbs updates all non-nil probability entries using the accumulated
 // counts from one inter frame decode (spec §8.9.2 / libvpx merge_probs).
 //
-// Key frames reset probs to defaults; call this only for inter frames.
-func AdaptProbs(probs *Probs, counts *Counts) {
+// full selects libvpx's vp9_adapt_mode_probs + vp9_adapt_mv_probs (tx, skip,
+// modes, partition, mv) which run only for inter frames; coefficient probs
+// (vp9_adapt_coef_probs) are always adapted. Intra (key/intra-only) frames pass
+// full=false so they adapt only the coef probs and leave mode/mv at the loaded
+// context (libvpx gates adapt_mode/mv_probs on !frame_is_intra_only).
+func AdaptProbs(probs *Probs, counts *Counts, full bool, coefCountSat, coefUpdateFactor uint32) {
 	if counts == nil {
 		return
 	}
 
-	// TX size probs.
-	for i := range probs.TxProbs8 {
-		probs.TxProbs8[i] = adaptProb(probs.TxProbs8[i], counts.TxProbs8[i])
-	}
-	for i := range probs.TxProbs16 {
-		for j := range probs.TxProbs16[i] {
-			probs.TxProbs16[i][j] = adaptProb(probs.TxProbs16[i][j], counts.TxProbs16[i][j])
+	if full {
+		// TX size probs.
+		for i := range probs.TxProbs8 {
+			probs.TxProbs8[i] = adaptProb(probs.TxProbs8[i], counts.TxProbs8[i])
 		}
-	}
-	for i := range probs.TxProbs32 {
-		for j := range probs.TxProbs32[i] {
-			probs.TxProbs32[i][j] = adaptProb(probs.TxProbs32[i][j], counts.TxProbs32[i][j])
+		for i := range probs.TxProbs16 {
+			for j := range probs.TxProbs16[i] {
+				probs.TxProbs16[i][j] = adaptProb(probs.TxProbs16[i][j], counts.TxProbs16[i][j])
+			}
+		}
+		for i := range probs.TxProbs32 {
+			for j := range probs.TxProbs32[i] {
+				probs.TxProbs32[i][j] = adaptProb(probs.TxProbs32[i][j], counts.TxProbs32[i][j])
+			}
 		}
 	}
 
-	// Coefficient probs.
+	// Coefficient probs (adapted for all frame types).
 	for i := range probs.CoefProbs {
 		for j := range probs.CoefProbs[i] {
 			for k := range probs.CoefProbs[i][j] {
 				for l := range probs.CoefProbs[i][j][k] {
 					for m := range probs.CoefProbs[i][j][k][l] {
 						for n := range probs.CoefProbs[i][j][k][l][m] {
-							probs.CoefProbs[i][j][k][l][m][n] = adaptProb(
+							probs.CoefProbs[i][j][k][l][m][n] = adaptProbParam(
 								probs.CoefProbs[i][j][k][l][m][n],
 								counts.CoefProbs[i][j][k][l][m][n],
+								coefCountSat, coefUpdateFactor,
 							)
 						}
 					}
 				}
 			}
 		}
+	}
+
+	if !full {
+		return
 	}
 
 	// Skip probs.
@@ -176,20 +187,24 @@ func AdaptProbs(probs *Probs, counts *Counts) {
 	}
 }
 
-// adaptProb implements VP9 merge_probs (spec §8.9.2 / libvpx vp9_entropy.c).
-// COUNT_SAT=20, MAX_UPDATE_FACTOR=128.
+// adaptProb implements VP9 mode/mv merge_probs (spec §8.9.2 / libvpx
+// mode_mv_merge_probs): MODE_MV_COUNT_SAT=20, MODE_MV_MAX_UPDATE_FACTOR=128.
 func adaptProb(prob uint8, count [2]uint32) uint8 {
+	return adaptProbParam(prob, count, 20, 128)
+}
+
+// adaptProbParam is VP9 merge_probs with explicit count_sat / max_update_factor
+// (coefficient probs use COEF_COUNT_SAT=24 and 112 or 128 — see AdaptProbs).
+func adaptProbParam(prob uint8, count [2]uint32, countSat, maxUpdateFactor uint32) uint8 {
 	total := count[0] + count[1]
 	if total == 0 {
 		return prob
 	}
-	const countSat = 20
-	const maxUpdateFactor = 128
 	sat := total
 	if sat > countSat {
 		sat = countSat
 	}
-	factor := uint32(maxUpdateFactor) * sat / countSat
+	factor := maxUpdateFactor * sat / countSat
 	// dominated_prob = clip(round(count[0]*256/total), 1, 255)
 	dom := (uint64(count[0])*256 + uint64(total)>>1) / uint64(total)
 	if dom < 1 {

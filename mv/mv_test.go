@@ -54,12 +54,13 @@ func TestReadMVJointHNZVZ(t *testing.T) {
 	br := boolcoder.NewReader(buf)
 	probs := newProbs128()
 	mv := ReadMV(br, probs, nil, false) // allowHP=false → hp=1
-	if mv.Col != 0 {
-		t.Fatalf("HNZVZ: col should be 0, got %d", mv.Col)
+	// HNZVZ (joint=1) is HORIZONTAL-nonzero / vertical-zero ⇒ col read, row 0.
+	if mv.Row != 0 {
+		t.Fatalf("HNZVZ: row should be 0, got %d", mv.Row)
 	}
-	// mag = base(8) + (d<<3|fr<<1|hp) = 8 + (0|0|1) = 9
-	if mv.Row != 9 {
-		t.Fatalf("HNZVZ: row = %d, want 9", mv.Row)
+	// CLASS_0: mag = base(0) + ((d<<3)|(fr<<1)|hp) + 1 = 0 + (0|0|1) + 1 = 2
+	if mv.Col != 2 {
+		t.Fatalf("HNZVZ: col = %d, want 2", mv.Col)
 	}
 }
 
@@ -83,11 +84,12 @@ func TestReadMVNegative(t *testing.T) {
 	br := boolcoder.NewReader(buf)
 	probs := newProbs128()
 	mv := ReadMV(br, probs, nil, false)
-	if mv.Row != -9 {
-		t.Fatalf("negative row: got %d, want -9", mv.Row)
+	// CLASS_0 mag = 0 + (0|0|1) + 1 = 2 each.
+	if mv.Row != -2 {
+		t.Fatalf("negative row: got %d, want -2", mv.Row)
 	}
-	if mv.Col != 9 {
-		t.Fatalf("positive col: got %d, want 9", mv.Col)
+	if mv.Col != 2 {
+		t.Fatalf("positive col: got %d, want 2", mv.Col)
 	}
 }
 
@@ -107,11 +109,13 @@ func TestReadMVClass0D1(t *testing.T) {
 	br := boolcoder.NewReader(buf)
 	probs := newProbs128()
 	mv := ReadMV(br, probs, nil, false)
-	if mv.Row != 0 {
-		t.Fatalf("HZVNZ: row should be 0, got %d", mv.Row)
+	// HZVNZ (joint=2) is VERTICAL-nonzero ⇒ row read, col 0.
+	// CLASS_0, d=1: mag = 0 + ((1<<3)|0|1) + 1 = 0 + 9 + 1 = 10
+	if mv.Col != 0 {
+		t.Fatalf("HZVNZ: col should be 0, got %d", mv.Col)
 	}
-	if mv.Col != 17 {
-		t.Fatalf("d=1 col: got %d, want 17", mv.Col)
+	if mv.Row != 10 {
+		t.Fatalf("d=1 row: got %d, want 10", mv.Row)
 	}
 }
 
@@ -132,8 +136,9 @@ func TestReadMVClass1(t *testing.T) {
 	br := boolcoder.NewReader(buf)
 	probs := newProbs128()
 	mv := ReadMV(br, probs, nil, false)
-	if mv.Row != 17 {
-		t.Fatalf("CLASS_1: row=%d, want 17", mv.Row)
+	// HNZVZ ⇒ col; CLASS_1, d=0: base=2<<3=16, mag=16+(0|0|1)+1=18.
+	if mv.Col != 18 {
+		t.Fatalf("CLASS_1: col=%d, want 18", mv.Col)
 	}
 }
 
@@ -154,7 +159,8 @@ func TestReadMVAllowHP(t *testing.T) {
 	br := boolcoder.NewReader(buf)
 	probs := newProbs128()
 	mv := ReadMV(br, probs, nil, true)
-	if mv.Row != 8 {
-		t.Fatalf("allowHP hp=0: row=%d, want 8", mv.Row)
+	// HNZVZ ⇒ col; CLASS_0, hp=0: mag = 0 + (0|0|0) + 1 = 1.
+	if mv.Col != 1 {
+		t.Fatalf("allowHP hp=0: col=%d, want 1", mv.Col)
 	}
 }

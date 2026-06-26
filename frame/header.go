@@ -39,6 +39,13 @@ type Header struct {
 	ShowFrame         bool
 	ErrorResilient    bool
 
+	// Probability frame-context model (§7.2)
+	IntraOnly           bool
+	ResetFrameContext   int  // 0..3 (inter/intra-only only; keyframes reset all)
+	RefreshFrameContext bool // save adapted fc back to frame_contexts[idx]
+	FrameParallel       bool // frame_parallel_decoding_mode (disables backward adapt)
+	FrameContextIdx     int  // 0..3
+
 	// Key-frame sync code present and valid
 	KeyframeSyncOK bool
 
@@ -78,8 +85,10 @@ type Header struct {
 	LoopFilterLevel     int // 0..63
 	LoopFilterSharpness int // 0..7
 	LFDeltaEnabled      bool
-	LFRefDeltas         [4]int // ref_deltas[INTRA/LAST/GOLDEN/ALTREF], range -63..63
-	LFModeDeltas        [2]int // mode_deltas[ZEROMV/other], range -63..63
+	LFRefDeltas         [4]int  // ref_deltas[INTRA/LAST/GOLDEN/ALTREF], range -63..63
+	LFModeDeltas        [2]int  // mode_deltas[ZEROMV/other], range -63..63
+	LFRefDeltaUpd       [4]bool // which ref_deltas this frame updated (others persist)
+	LFModeDeltaUpd      [2]bool // which mode_deltas this frame updated
 
 	// Refresh flags (which reference buffer slots get this frame, bit mask 0..255)
 	RefreshFrameFlags uint8
@@ -94,9 +103,9 @@ type Header struct {
 	SegEnabled     bool
 	SegUpdateMap   bool
 	SegTempUpdate  bool
-	SegAbsOrDelta  bool         // true = absolute Q; false = delta
-	SegTreeProbs   [7]uint8     // valid when SegUpdateMap
-	SegPredProbs   [3]uint8     // valid when SegUpdateMap && SegTempUpdate
+	SegAbsOrDelta  bool     // true = absolute Q; false = delta
+	SegTreeProbs   [7]uint8 // valid when SegUpdateMap
+	SegPredProbs   [3]uint8 // valid when SegUpdateMap && SegTempUpdate
 	SegFeatEnabled [8][4]bool
 	SegFeatData    [8][4]int16
 }
@@ -155,6 +164,7 @@ func (b *bitReader) bytePos() int {
 // Pass 0 for both on first call; they are ignored for key frames.
 // It returns the decoded Header; the caller uses Header.CompressedHeaderSize to
 // locate the compressed header immediately after.
+
 func Parse(payload []byte, prevWidth, prevHeight int) (*Header, error) {
 	b := newBitReader(payload)
 	h := &Header{}
@@ -205,8 +215,9 @@ func Parse(payload []byte, prevWidth, prevHeight int) (*Header, error) {
 		if !h.ShowFrame {
 			intraOnly = b.readBit() == 1
 		}
+		h.IntraOnly = intraOnly
 		if !h.ErrorResilient {
-			b.readBits(2) // reset_frame_context
+			h.ResetFrameContext = int(b.readBits(2))
 		}
 		if intraOnly {
 			b0 := b.readBits(8)
@@ -238,10 +249,13 @@ func Parse(payload []byte, prevWidth, prevHeight int) (*Header, error) {
 	}
 
 	if !h.ErrorResilient {
-		b.readBit() // refresh_frame_context
-		b.readBit() // frame_parallel_decoding_mode
+		h.RefreshFrameContext = b.readBit() == 1
+		h.FrameParallel = b.readBit() == 1
+	} else {
+		h.RefreshFrameContext = false
+		h.FrameParallel = true
 	}
-	b.readBits(2) // frame_context_idx (FRAME_CONTEXTS_LOG2 = 2)
+	h.FrameContextIdx = int(b.readBits(2)) // FRAME_CONTEXTS_LOG2 = 2
 
 	parseLoopFilterParams(b, h)
 	parseQuantizationParams(b, h)
@@ -298,10 +312,10 @@ func parseFrameSize(b *bitReader, h *Header) {
 }
 
 // parseRenderSize reads render_size() (spec §7.2.4).
-// render_and_frame_size_equal_flag=1 means render dims = frame dims (no bits follow).
-// render_and_frame_size_equal_flag=0 means explicit render_width/height follow.
+// render_and_frame_size_different=1 means explicit render_width/height follow;
+// =0 means render dims equal frame dims (no bits follow).
 func parseRenderSize(b *bitReader, h *Header) {
-	if b.readBit() == 0 {
+	if b.readBit() == 1 {
 		h.DisplayWidth = int(b.readBits(16)) + 1
 		h.DisplayHeight = int(b.readBits(16)) + 1
 		h.RenderAndFrame = false
@@ -325,22 +339,22 @@ func parseFrameSizeWithRefs(b *bitReader, h *Header, prevWidth, prevHeight int) 
 	}
 	if !found {
 		parseFrameSize(b, h)
-		parseRenderSize(b, h)
 	} else {
-		// When using a reference frame's size, render_size is also inherited (not read).
+		// Using a reference frame's size (constant-size stream → prev dims).
 		h.FrameWidth = prevWidth
 		h.FrameHeight = prevHeight
-		h.DisplayWidth = prevWidth
-		h.DisplayHeight = prevHeight
-		h.RenderAndFrame = true
 	}
+	// render_size() is ALWAYS read in frame_size_with_refs, even when a
+	// reference size was found (VP9 spec §7.2.5 / 6.2.5).
+	parseRenderSize(b, h)
 }
 
-// su6 reads a 6-bit 2's-complement signed integer (VP9 spec su(6)).
+// su6 reads a VP9 su(6): a 6-bit magnitude followed by a 1-bit sign (spec §9.1,
+// read_signed_literal). NOT 2's complement — it is sign-magnitude, 7 bits total.
 func su6(b *bitReader) int {
 	v := int(b.readBits(6))
-	if v >= 32 {
-		v -= 64
+	if b.readBit() == 1 {
+		v = -v
 	}
 	return v
 }
@@ -355,11 +369,13 @@ func parseLoopFilterParams(b *bitReader, h *Header) {
 			for i := 0; i < 4; i++ {
 				if b.readBit() == 1 {
 					h.LFRefDeltas[i] = su6(b)
+					h.LFRefDeltaUpd[i] = true
 				}
 			}
 			for i := 0; i < 2; i++ {
 				if b.readBit() == 1 {
 					h.LFModeDeltas[i] = su6(b)
+					h.LFModeDeltaUpd[i] = true
 				}
 			}
 		}

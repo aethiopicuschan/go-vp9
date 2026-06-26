@@ -58,7 +58,14 @@ func encodeTermSubexp(w *boolcoder.Writer, v int) {
 		return
 	}
 	w.WriteBit(1)
-	w.WriteLiteral(uint32(v-64), 8)
+	// 4th branch: encode_uniform(v-64), the inverse of decodeUniform.
+	u := v - 64
+	if u < 65 {
+		w.WriteLiteral(uint32(u), 7)
+	} else {
+		w.WriteLiteral(uint32((u+65)>>1), 7)
+		w.WriteBit((u + 65) & 1)
+	}
 }
 
 func TestDecodeTermSubexp(t *testing.T) {
@@ -141,7 +148,7 @@ func TestNullUpdateKeyFrame(t *testing.T) {
 	buf := buildNullUpdate(t)
 	br := boolcoder.NewReader(buf)
 
-	if err := Decode(br, true, InterpEightTap, false, p); err != nil {
+	if err := Decode(br, true, InterpEightTap, false, false, p); err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
 
@@ -231,7 +238,7 @@ func TestNullUpdateTxModeSelect(t *testing.T) {
 
 	p := NewProbs()
 	br := boolcoder.NewReader(w.Bytes())
-	if err := Decode(br, true, InterpEightTap, false, p); err != nil {
+	if err := Decode(br, true, InterpEightTap, false, false, p); err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
 	if p.TxMode != TxModeSelect {

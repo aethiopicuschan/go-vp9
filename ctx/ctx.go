@@ -98,21 +98,27 @@ func NewRow(w int) *Row {
 	return r
 }
 
-// NewCol allocates a Col for a superblock height of 64 pixels (16 MI rows).
-func NewCol() *Col {
-	const sbMI = 16 // 64 pixels / 4
-	c := &Col{N4: sbMI}
-	c.Partition = make([]uint8, sbMI/2)
-	c.TxSize = make([]uint8, sbMI)
-	c.Skip = make([]bool, sbMI)
-	c.Ref = make([][2]int, sbMI)
-	c.Inter = make([]bool, sbMI)
-	c.ZeroMV = make([]bool, sbMI)
-	c.YMode = make([]uint8, sbMI)
-	for p := 0; p < 3; p++ {
-		c.NZC[p] = make([]bool, sbMI)
+// NewCol creates a left-context column covering n4 4×4 rows. The left context
+// is indexed by the ABSOLUTE 4×4 row within the tile; the decoder sizes it to
+// the whole tile height so that each superblock row uses a disjoint range of
+// rows (an implicit per-SB-row reset, matching libvpx vp9_zero_left_context).
+// n4 < 16 is rounded up to one 64-px superblock.
+func NewCol(n4 int) *Col {
+	if n4 < 16 {
+		n4 = 16
 	}
-	c.InterpFilter = make([]uint8, sbMI)
+	c := &Col{N4: n4}
+	c.Partition = make([]uint8, (n4+1)/2)
+	c.TxSize = make([]uint8, n4)
+	c.Skip = make([]bool, n4)
+	c.Ref = make([][2]int, n4)
+	c.Inter = make([]bool, n4)
+	c.ZeroMV = make([]bool, n4)
+	c.YMode = make([]uint8, n4)
+	for p := 0; p < 3; p++ {
+		c.NZC[p] = make([]bool, n4)
+	}
+	c.InterpFilter = make([]uint8, n4)
 	c.Reset()
 	return c
 }
@@ -322,18 +328,28 @@ func SkipCtx(aboveSkip, leftSkip bool) int {
 //
 // hasAbove/hasLeft indicate whether a valid block exists in that direction.
 // When absent, that neighbour does not contribute to the context.
-func TxSizeCtx(hasAbove, hasLeft bool, aboveTx, leftTx, maxTx uint8) int {
-	ctx := 0
-	if hasAbove && aboveTx >= maxTx {
-		ctx++
+func TxSizeCtx(hasAbove, hasLeft bool, aboveSkip, leftSkip bool, aboveTx, leftTx, maxTx uint8) int {
+	// libvpx get_tx_size_context: a skipped (or absent) neighbour contributes
+	// max_tx_size, the missing side mirrors the present one, and the context is
+	// whether the two contributions sum to more than max_tx_size.
+	aboveCtx := maxTx
+	if hasAbove && !aboveSkip {
+		aboveCtx = aboveTx
 	}
-	if hasLeft && leftTx >= maxTx {
-		ctx++
+	leftCtx := maxTx
+	if hasLeft && !leftSkip {
+		leftCtx = leftTx
 	}
-	if ctx > 1 {
-		ctx = 1
+	if !hasLeft {
+		leftCtx = aboveCtx
 	}
-	return ctx
+	if !hasAbove {
+		aboveCtx = leftCtx
+	}
+	if int(aboveCtx)+int(leftCtx) > int(maxTx) {
+		return 1
+	}
+	return 0
 }
 
 // IsInterCtx returns the is_inter probability context (0..3) from above/left

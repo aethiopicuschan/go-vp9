@@ -24,9 +24,13 @@
 package refbuf
 
 // BORDER is the number of pixels added on every side of each plane for
-// sub-pixel filter access.  VP9 requires at least 3; we use 8 to match
-// libvpx's VP9_INTERP_EXTEND.
-const BORDER = 8
+// sub-pixel filter access.  The 8-tap filter needs ±3..+4, but inter motion
+// vectors point past the frame edge, and the MC reads the reference's border
+// there.  libvpx's decoder carries a 32-pixel border and falls back to an
+// on-demand edge-replicating copy (extend_and_predict) for reads beyond it.
+// We instead carry a wide border (replicating the frame edge, identical result
+// to extend_and_predict) so any MV within BORDER pixels of the edge is exact.
+const BORDER = 96
 
 // Frame is one decoded reference frame (4:2:0 planar, 8-bit).
 type Frame struct {

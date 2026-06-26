@@ -5,9 +5,10 @@
 //   - vertical edge:   step = stride (bytes to the next row)
 //
 // The four filter widths:
-//   filter4  – 4-tap narrow (inner 4×4 sub-block edges)
-//   filter8  – 8-tap wide  (TX-block edges, luma/chroma)
-//   filter16 – 14-tap      (super-block / large TX edges)
+//
+//	filter4  – 4-tap narrow (inner 4×4 sub-block edges)
+//	filter8  – 8-tap wide  (TX-block edges, luma/chroma)
+//	filter16 – 14-tap      (super-block / large TX edges)
 package loopfilter
 
 // ---- helpers ----------------------------------------------------------------
@@ -68,17 +69,19 @@ func needsFilter(buf []byte, q0 int, step int, blim, lim uint8) bool {
 		abs8(p0-q0v)*2+abs8(p1-q1)/2 > blimI)
 }
 
-// isFlat2 returns true for the extra-wide 14-tap filter condition
-// (6 samples on each side are all within ±1 of p0 and q0).
+// isFlat2 is libvpx flat_mask5: the extra-wide 16-tap condition — samples 5..8
+// away on each side are within ±1 of p0 (left) / q0 (right).
 func isFlat2(buf []byte, q0, step int) bool {
 	p0 := int(buf[q0-1*step])
 	q0v := int(buf[q0])
-	return abs8(int(buf[q0-4*step])-p0) <= 1 &&
-		abs8(int(buf[q0-5*step])-p0) <= 1 &&
+	return abs8(int(buf[q0-5*step])-p0) <= 1 &&
 		abs8(int(buf[q0-6*step])-p0) <= 1 &&
-		abs8(int(buf[q0+3*step])-q0v) <= 1 &&
+		abs8(int(buf[q0-7*step])-p0) <= 1 &&
+		abs8(int(buf[q0-8*step])-p0) <= 1 &&
 		abs8(int(buf[q0+4*step])-q0v) <= 1 &&
-		abs8(int(buf[q0+5*step])-q0v) <= 1
+		abs8(int(buf[q0+5*step])-q0v) <= 1 &&
+		abs8(int(buf[q0+6*step])-q0v) <= 1 &&
+		abs8(int(buf[q0+7*step])-q0v) <= 1
 }
 
 // ---- 4-tap narrow filter (spec §8.8.5) -------------------------------------
@@ -149,28 +152,36 @@ func applyFilter8Vals(buf []byte, q0, step, p3, p2, p1, p0, q0v, q1, q2, q3 int)
 	buf[q0+2*step] = clampByte(round3(p0 + q0v + q1 + 2*q2 + q3 + q3 + q3))
 }
 
-// applyFilter16Vals applies the 14-tap filter with p3..q3 pre-loaded.
-// Loads only the 6 extra values (p4..p6, q4..q6) from buf.
+// round4 = (v + 8) >> 4 (ROUND_POWER_OF_TWO(_, 4)).
+func round4(v int) int { return (v + 8) >> 4 }
+
+// applyFilter16Vals is a line-for-line port of libvpx filter16 (the 16-wide
+// "mb" filter): reads p7..p0, q0..q7 (8 each side) and writes op6..oq6
+// (q0-7..q0+6) with ROUND_POWER_OF_TWO(_, 4). p3..q3 are pre-loaded.
 func applyFilter16Vals(buf []byte, q0, step, p3, p2, p1, p0, q0v, q1, q2, q3 int) {
+	p7 := int(buf[q0-8*step])
 	p6 := int(buf[q0-7*step])
 	p5 := int(buf[q0-6*step])
 	p4 := int(buf[q0-5*step])
 	q4 := int(buf[q0+4*step])
 	q5 := int(buf[q0+5*step])
 	q6 := int(buf[q0+6*step])
+	q7 := int(buf[q0+7*step])
 
-	buf[q0-6*step] = clampByte(round3(p6*7 + p5*2 + p4 + p3 + p2 + p1 + p0 + q0v))
-	buf[q0-5*step] = clampByte(round3(p6*5 + p5*2 + p4*2 + p3 + p2 + p1 + p0 + q0v + q1))
-	buf[q0-4*step] = clampByte(round3(p6*4 + p5 + p4*2 + p3*2 + p2 + p1 + p0 + q0v + q1 + q2))
-	buf[q0-3*step] = clampByte(round3(p6*3 + p5 + p4 + p3*2 + p2*2 + p1 + p0 + q0v + q1 + q2 + q3))
-	buf[q0-2*step] = clampByte(round3(p6*2 + p5 + p4 + p3 + p2*2 + p1*2 + p0 + q0v + q1 + q2 + q3 + q4))
-	buf[q0-1*step] = clampByte(round3(p6 + p5 + p4 + p3 + p2 + p1*2 + p0*2 + q0v + q1 + q2 + q3 + q4 + q5))
-	buf[q0] = clampByte(round3(p5 + p4 + p3 + p2 + p1 + p0*2 + q0v*2 + q1 + q2 + q3 + q4 + q5 + q6))
-	buf[q0+1*step] = clampByte(round3(p4 + p3 + p2 + p1 + p0 + q0v*2 + q1*2 + q2 + q3 + q4 + q5 + q6 + q6))
-	buf[q0+2*step] = clampByte(round3(p3 + p2 + p1 + p0 + q0v + q1*2 + q2*2 + q3 + q4 + q5 + q6*2))
-	buf[q0+3*step] = clampByte(round3(p2 + p1 + p0 + q0v + q1 + q2*2 + q3*2 + q4 + q5 + q6*3))
-	buf[q0+4*step] = clampByte(round3(p1 + p0 + q0v + q1 + q2 + q3*2 + q4*2 + q5 + q6*4))
-	buf[q0+5*step] = clampByte(round3(p0 + q0v + q1 + q2 + q3 + q4*2 + q5*2 + q6*5))
+	buf[q0-7*step] = clampByte(round4(p7*7 + p6*2 + p5 + p4 + p3 + p2 + p1 + p0 + q0v))
+	buf[q0-6*step] = clampByte(round4(p7*6 + p6 + p5*2 + p4 + p3 + p2 + p1 + p0 + q0v + q1))
+	buf[q0-5*step] = clampByte(round4(p7*5 + p6 + p5 + p4*2 + p3 + p2 + p1 + p0 + q0v + q1 + q2))
+	buf[q0-4*step] = clampByte(round4(p7*4 + p6 + p5 + p4 + p3*2 + p2 + p1 + p0 + q0v + q1 + q2 + q3))
+	buf[q0-3*step] = clampByte(round4(p7*3 + p6 + p5 + p4 + p3 + p2*2 + p1 + p0 + q0v + q1 + q2 + q3 + q4))
+	buf[q0-2*step] = clampByte(round4(p7*2 + p6 + p5 + p4 + p3 + p2 + p1*2 + p0 + q0v + q1 + q2 + q3 + q4 + q5))
+	buf[q0-1*step] = clampByte(round4(p7 + p6 + p5 + p4 + p3 + p2 + p1 + p0*2 + q0v + q1 + q2 + q3 + q4 + q5 + q6))
+	buf[q0] = clampByte(round4(p6 + p5 + p4 + p3 + p2 + p1 + p0 + q0v*2 + q1 + q2 + q3 + q4 + q5 + q6 + q7))
+	buf[q0+1*step] = clampByte(round4(p5 + p4 + p3 + p2 + p1 + p0 + q0v + q1*2 + q2 + q3 + q4 + q5 + q6 + q7*2))
+	buf[q0+2*step] = clampByte(round4(p4 + p3 + p2 + p1 + p0 + q0v + q1 + q2*2 + q3 + q4 + q5 + q6 + q7*3))
+	buf[q0+3*step] = clampByte(round4(p3 + p2 + p1 + p0 + q0v + q1 + q2 + q3*2 + q4 + q5 + q6 + q7*4))
+	buf[q0+4*step] = clampByte(round4(p2 + p1 + p0 + q0v + q1 + q2 + q3 + q4*2 + q5 + q6 + q7*5))
+	buf[q0+5*step] = clampByte(round4(p1 + p0 + q0v + q1 + q2 + q3 + q4 + q5*2 + q6 + q7*6))
+	buf[q0+6*step] = clampByte(round4(p0 + q0v + q1 + q2 + q3 + q4 + q5 + q6*2 + q7*7))
 }
 
 // ---- Public edge filter entry points ----------------------------------------
@@ -208,9 +219,9 @@ func FilterEdge4(buf []byte, q0, step, width int, p Params) {
 	t := int(p.Thresh)
 	highEdge := abs8(p1-p0) > t || abs8(q0v-q1) > t
 
-	// Inline isFlat — all 7 inner deltas ≤ 1 relative to p0.
-	flat := abs8(p3-p0) <= 1 && abs8(p2-p0) <= 1 && abs8(p1-p0) <= 1 &&
-		abs8(q0v-p0) <= 1 && abs8(q1-p0) <= 1 && abs8(q2-p0) <= 1 && abs8(q3-p0) <= 1
+	// Inline isFlat (libvpx flat_mask4): p-side deltas vs p0, q-side vs q0.
+	flat := abs8(p1-p0) <= 1 && abs8(q1-q0v) <= 1 && abs8(p2-p0) <= 1 &&
+		abs8(q2-q0v) <= 1 && abs8(p3-p0) <= 1 && abs8(q3-q0v) <= 1
 
 	switch width {
 	case 16:

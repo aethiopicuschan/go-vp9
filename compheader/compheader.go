@@ -4,7 +4,9 @@
 // Original implementation from the public VP9 Bitstream & Decoding Process Spec.
 package compheader
 
-import "github.com/mgvs/go-vp9/boolcoder"
+import (
+	"github.com/mgvs/go-vp9/boolcoder"
+)
 
 // ---- TX mode constants (spec §7.3.2) ----
 
@@ -223,11 +225,20 @@ func invRecenterNonneg(v, m int) int {
 // probability m to the updated probability (spec §7.3.5).
 // v must be in [0, 253].
 func invRemapProb(v int, m uint8) uint8 {
+	const maxProb = 255
 	if v >= len(invMapTable) {
 		v = len(invMapTable) - 1
 	}
 	x := int(invMapTable[v])
-	result := invRecenterNonneg(x, int(m)-1) + 1
+	mm := int(m) - 1
+	var result int
+	// libvpx inv_remap_prob: two branches depending on whether m is in the
+	// lower or upper half of the probability range.
+	if (mm << 1) <= maxProb {
+		result = 1 + invRecenterNonneg(x, mm)
+	} else {
+		result = maxProb - invRecenterNonneg(x, maxProb-1-mm)
+	}
 	if result < 1 {
 		return 1
 	}
@@ -250,7 +261,19 @@ func decodeTermSubexp(br *boolcoder.Reader) int {
 	if br.ReadBit() == 0 {
 		return 32 + int(br.ReadLiteral(5)) // [32, 63]
 	}
-	return 64 + int(br.ReadLiteral(8)) // [64, 319]
+	return 64 + decodeUniform(br) // [64, 253]
+}
+
+// decodeUniform reads a near-uniform value in [0, 190] (libvpx decode_uniform):
+// 7 bits cover [0, 64]; larger values read an 8th bit. NOT a flat 8-bit literal.
+func decodeUniform(br *boolcoder.Reader) int {
+	const l = 8
+	const m = (1 << l) - 191 // 65
+	v := int(br.ReadLiteral(l - 1))
+	if v < m {
+		return v
+	}
+	return (v << 1) - m + br.ReadBit()
 }
 
 // diffUpdateProb conditionally updates a probability from the bool stream
@@ -259,8 +282,7 @@ func diffUpdateProb(br *boolcoder.Reader, p uint8) uint8 {
 	if br.ReadBool(252) == 0 {
 		return p
 	}
-	v := decodeTermSubexp(br)
-	return invRemapProb(v, p)
+	return invRemapProb(decodeTermSubexp(br), p)
 }
 
 // ---- Decode ----
@@ -270,7 +292,7 @@ func diffUpdateProb(br *boolcoder.Reader, p uint8) uint8 {
 // interpFilter is the interpolation filter from the uncompressed header
 // (InterpSwitchable triggers reading interp filter probs).
 // allowHPMV controls whether high-precision MV probs are read.
-func Decode(br *boolcoder.Reader, isIntra bool, interpFilter int, allowHPMV bool, probs *Probs) error {
+func Decode(br *boolcoder.Reader, isIntra bool, interpFilter int, allowHPMV bool, compoundAllowed bool, probs *Probs) error {
 	probs.TxMode = readTxMode(br)
 	if probs.TxMode == TxModeSelect {
 		readTxModeProbs(br, probs)
@@ -283,10 +305,12 @@ func Decode(br *boolcoder.Reader, isIntra bool, interpFilter int, allowHPMV bool
 			readInterpFilterProbs(br, probs)
 		}
 		readIsInterProbs(br, probs)
-		readFrameReferenceMode(br, probs)
+		readFrameReferenceMode(br, probs, compoundAllowed)
 		readFrameReferenceModeProbs(br, probs)
 		readYModeProbs(br, probs)
-		readUVModeProbs(br, probs)
+		// NOTE: the compressed header does NOT update uv_mode probs for inter
+		// frames (libvpx read_compressed_header: y_mode → partition → mv directly).
+		// UV mode probs are only backward-adapted.
 		readPartitionProbs(br, probs)
 		readMVProbs(br, allowHPMV, probs)
 	}
@@ -339,6 +363,9 @@ func bandCoeffContexts(band int) int {
 func readCoefProbs(br *boolcoder.Reader, p *Probs) {
 	maxTx := maxTxSizeForMode(p.TxMode)
 	for tx := 0; tx <= maxTx; tx++ {
+		if br.ReadBit() == 0 {
+			continue
+		}
 		for pt := 0; pt < planeTypes; pt++ {
 			for rt := 0; rt < refTypes; rt++ {
 				for band := 0; band < coefBands; band++ {
@@ -387,8 +414,15 @@ func readIsInterProbs(br *boolcoder.Reader, p *Probs) {
 	}
 }
 
-// readFrameReferenceMode reads the reference mode field (§7.3.8).
-func readFrameReferenceMode(br *boolcoder.Reader, p *Probs) {
+// readFrameReferenceMode reads the reference mode field (§7.3.8 /
+// libvpx read_frame_reference_mode). The mode bits are coded ONLY when compound
+// prediction is allowed (some reference frame has a different sign bias);
+// otherwise the mode is SINGLE_REFERENCE with no bits read.
+func readFrameReferenceMode(br *boolcoder.Reader, p *Probs, compoundAllowed bool) {
+	if !compoundAllowed {
+		p.ReferenceMode = RefModeSingle
+		return
+	}
 	if br.ReadBit() == 1 {
 		if br.ReadBit() == 1 {
 			p.ReferenceMode = RefModeSelect
@@ -401,21 +435,23 @@ func readFrameReferenceMode(br *boolcoder.Reader, p *Probs) {
 }
 
 // readFrameReferenceModeProbs reads ref mode probability updates (§7.3.9).
+// Order per libvpx read_frame_reference_mode_probs / spec §7.3.9:
+// comp_inter, then SINGLE-ref, then COMPOUND-ref. (single_ref precedes comp_ref.)
 func readFrameReferenceModeProbs(br *boolcoder.Reader, p *Probs) {
 	if p.ReferenceMode == RefModeSelect {
 		for i := range p.CompInterProbs {
 			p.CompInterProbs[i] = diffUpdateProb(br, p.CompInterProbs[i])
 		}
 	}
-	if p.ReferenceMode != RefModeSingle {
-		for i := range p.CompRefProbs {
-			p.CompRefProbs[i] = diffUpdateProb(br, p.CompRefProbs[i])
-		}
-	}
 	if p.ReferenceMode != RefModeCompound {
 		for i := range p.SingleRefProbs {
 			p.SingleRefProbs[i][0] = diffUpdateProb(br, p.SingleRefProbs[i][0])
 			p.SingleRefProbs[i][1] = diffUpdateProb(br, p.SingleRefProbs[i][1])
+		}
+	}
+	if p.ReferenceMode != RefModeSingle {
+		for i := range p.CompRefProbs {
+			p.CompRefProbs[i] = diffUpdateProb(br, p.CompRefProbs[i])
 		}
 	}
 }
@@ -485,5 +521,18 @@ func readMVProbs(br *boolcoder.Reader, allowHP bool, p *Probs) {
 // updateMVProb reads a MV probability update: flag at prob 252, delta via subexp (§7.3.12).
 // MV probs use the same diff_update_prob mechanism as coef probs.
 func updateMVProb(br *boolcoder.Reader, p uint8) uint8 {
-	return diffUpdateProb(br, p)
+	// libvpx update_mv_probs (NOT diff_update_prob): read MV_UPDATE_PROB (252);
+	// if set, the new prob is a raw 7-bit literal mapped to an odd value
+	// (literal<<1)|1 — a different mechanism from the coef/mode subexp update.
+	if br.ReadBool(252) == 1 {
+		return uint8((br.ReadLiteral(7) << 1) | 1)
+	}
+	return p
+}
+
+// Clone returns a deep copy of the probability tables. Probs contains only
+// fixed-size arrays, so a value copy suffices.
+func (p *Probs) Clone() *Probs {
+	c := *p
+	return &c
 }
