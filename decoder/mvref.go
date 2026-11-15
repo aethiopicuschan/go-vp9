@@ -260,8 +260,14 @@ func (d *Decoder) appendSub8x8(refFrame, ref, row4, col4, bsW4, bsH4, blockIdx, 
 	near := bMode == blockmode.NearMV
 	switch blockIdx {
 	case 0:
-		_, mvList, cnt := d.findMVRefs(row4, col4, bsW4, bsH4, refFrame, 0, !near, false, d.signBias, d.allowHP)
-		return mvList[cnt-1]
+		_, mvList, _ := d.findMVRefs(row4, col4, bsW4, bsH4, refFrame, 0, !near, false, d.signBias, d.allowHP)
+		// find_mv_refs_idx zero-initializes both list entries. The VP9
+		// append_sub8x8_mvs_for_idx rule selects entry 0 for NEARESTMV and
+		// entry 1 for NEARMV; a missing candidate therefore stays ZeroMv.
+		if near {
+			return mvList[1]
+		}
+		return mvList[0]
 	case 1, 2:
 		if !near { // NEARESTMV
 			return bmi[0][ref]
