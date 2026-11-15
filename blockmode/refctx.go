@@ -1,6 +1,6 @@
 package blockmode
 
-import "github.com/mgvs/go-vp9/ctx"
+import "github.com/aethiopicuschan/go-vp9/ctx"
 
 // ---- Reference frame context functions (spec §8.3.3 / libvpx vp9_pred_common.c) ----
 

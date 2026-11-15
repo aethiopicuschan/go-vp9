@@ -5,7 +5,7 @@
 package compheader
 
 import (
-	"github.com/mgvs/go-vp9/boolcoder"
+	"github.com/aethiopicuschan/go-vp9/boolcoder"
 )
 
 // ---- TX mode constants (spec §7.3.2) ----

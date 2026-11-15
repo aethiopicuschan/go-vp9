@@ -3,11 +3,11 @@ package decoder
 import (
 	"testing"
 
-	bm "github.com/mgvs/go-vp9/blockmode"
-	"github.com/mgvs/go-vp9/boolcoder"
-	"github.com/mgvs/go-vp9/ctx"
-	"github.com/mgvs/go-vp9/mv"
-	"github.com/mgvs/go-vp9/mvpred"
+	bm "github.com/aethiopicuschan/go-vp9/blockmode"
+	"github.com/aethiopicuschan/go-vp9/boolcoder"
+	"github.com/aethiopicuschan/go-vp9/ctx"
+	"github.com/aethiopicuschan/go-vp9/mv"
+	"github.com/aethiopicuschan/go-vp9/mvpred"
 )
 
 // ---- New / init -------------------------------------------------------------

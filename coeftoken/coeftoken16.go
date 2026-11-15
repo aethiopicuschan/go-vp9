@@ -1,8 +1,8 @@
 package coeftoken
 
 import (
-	"github.com/mgvs/go-vp9/boolcoder"
-	"github.com/mgvs/go-vp9/compheader"
+	"github.com/aethiopicuschan/go-vp9/boolcoder"
+	"github.com/aethiopicuschan/go-vp9/compheader"
 )
 
 // High-bit-depth coefficient token decode: identical to DecodeBlock but emits

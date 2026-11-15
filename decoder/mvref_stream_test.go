@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/mgvs/go-vp9/refbuf"
+	"github.com/aethiopicuschan/go-vp9/refbuf"
 )
 
 // These two-frame IVF inputs were encoded with libvpx. Their second frame

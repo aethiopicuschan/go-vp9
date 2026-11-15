@@ -1,9 +1,9 @@
 package decoder
 
 import (
-	"github.com/mgvs/go-vp9/blockmode"
-	"github.com/mgvs/go-vp9/ctx"
-	"github.com/mgvs/go-vp9/mv"
+	"github.com/aethiopicuschan/go-vp9/blockmode"
+	"github.com/aethiopicuschan/go-vp9/ctx"
+	"github.com/aethiopicuschan/go-vp9/mv"
 )
 
 // VP9 motion-vector reference search (libvpx vp9/common/vp9_mvref_common.{c,h}):

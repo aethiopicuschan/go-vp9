@@ -1,6 +1,6 @@
 package intra
 
-import "github.com/mgvs/go-vp9/modeinfo"
+import "github.com/aethiopicuschan/go-vp9/modeinfo"
 
 // Reference-sample requirement flags (libvpx extend_modes).
 const (

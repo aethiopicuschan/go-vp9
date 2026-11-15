@@ -1,3 +1,3 @@
-module github.com/mgvs/go-vp9
+module github.com/aethiopicuschan/go-vp9
 
 go 1.26

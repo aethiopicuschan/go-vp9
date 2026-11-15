@@ -12,7 +12,7 @@
 // extension.
 package mvpred
 
-import "github.com/mgvs/go-vp9/mv"
+import "github.com/aethiopicuschan/go-vp9/mv"
 
 // RefFrame constants used to identify which reference frame a block uses.
 const (

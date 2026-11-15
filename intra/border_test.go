@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mgvs/go-vp9/modeinfo"
+	"github.com/aethiopicuschan/go-vp9/modeinfo"
 )
 
 // TestPredictBlockVsLibvpx compares PredictBlock against libvpx

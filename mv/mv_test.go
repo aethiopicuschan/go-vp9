@@ -3,8 +3,8 @@ package mv
 import (
 	"testing"
 
-	"github.com/mgvs/go-vp9/boolcoder"
-	"github.com/mgvs/go-vp9/compheader"
+	"github.com/aethiopicuschan/go-vp9/boolcoder"
+	"github.com/aethiopicuschan/go-vp9/compheader"
 )
 
 // newProbs128 returns a Probs with all values set to 128 (prob=0.5).

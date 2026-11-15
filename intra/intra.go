@@ -5,7 +5,7 @@
 package intra
 
 import (
-	"github.com/mgvs/go-vp9/modeinfo"
+	"github.com/aethiopicuschan/go-vp9/modeinfo"
 )
 
 // Predict fills dst (row-major, stride stride) with the intra prediction for

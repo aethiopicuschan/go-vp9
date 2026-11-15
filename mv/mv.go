@@ -15,8 +15,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/mgvs/go-vp9/boolcoder"
-	"github.com/mgvs/go-vp9/compheader"
+	"github.com/aethiopicuschan/go-vp9/boolcoder"
+	"github.com/aethiopicuschan/go-vp9/compheader"
 )
 
 // DbgW: when non-nil, ReadMV traces joint + per-step range.

@@ -4,8 +4,8 @@
 package coeftoken
 
 import (
-	"github.com/mgvs/go-vp9/boolcoder"
-	"github.com/mgvs/go-vp9/compheader"
+	"github.com/aethiopicuschan/go-vp9/boolcoder"
+	"github.com/aethiopicuschan/go-vp9/compheader"
 )
 
 // ScanType selects the coefficient scan pattern for a TX block.

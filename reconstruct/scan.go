@@ -1,6 +1,6 @@
 package reconstruct
 
-import "github.com/mgvs/go-vp9/transform"
+import "github.com/aethiopicuschan/go-vp9/transform"
 
 // VP9 scan orders for each TX size × TX type combination.
 // Each table maps scan position → raster index (row*n + col).

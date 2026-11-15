@@ -16,12 +16,12 @@ package blockmode
 
 import (
 	"fmt"
-	"github.com/mgvs/go-vp9/boolcoder"
-	"github.com/mgvs/go-vp9/compheader"
-	"github.com/mgvs/go-vp9/ctx"
-	"github.com/mgvs/go-vp9/modeinfo"
-	"github.com/mgvs/go-vp9/mv"
-	"github.com/mgvs/go-vp9/segment"
+	"github.com/aethiopicuschan/go-vp9/boolcoder"
+	"github.com/aethiopicuschan/go-vp9/compheader"
+	"github.com/aethiopicuschan/go-vp9/ctx"
+	"github.com/aethiopicuschan/go-vp9/modeinfo"
+	"github.com/aethiopicuschan/go-vp9/mv"
+	"github.com/aethiopicuschan/go-vp9/segment"
 	"io"
 )
 

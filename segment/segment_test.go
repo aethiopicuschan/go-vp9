@@ -3,7 +3,7 @@ package segment
 import (
 	"testing"
 
-	"github.com/mgvs/go-vp9/boolcoder"
+	"github.com/aethiopicuschan/go-vp9/boolcoder"
 )
 
 // encodeSegID encodes a segment ID into a byte slice using prob=128 for all nodes.

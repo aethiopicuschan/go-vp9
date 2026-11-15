@@ -3,7 +3,7 @@ package intra
 import (
 	"testing"
 
-	"github.com/mgvs/go-vp9/modeinfo"
+	"github.com/aethiopicuschan/go-vp9/modeinfo"
 )
 
 // makeAbove returns a slice of n uint8 values 10, 20, 30, ...

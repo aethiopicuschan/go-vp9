@@ -3,7 +3,7 @@ package mvpred
 import (
 	"testing"
 
-	"github.com/mgvs/go-vp9/mv"
+	"github.com/aethiopicuschan/go-vp9/mv"
 )
 
 func bm(row, col int16, ref int) BlockMV {

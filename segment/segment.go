@@ -13,7 +13,7 @@
 // also in the uncompressed header (frame.Header.SegFeat*).
 package segment
 
-import "github.com/mgvs/go-vp9/boolcoder"
+import "github.com/aethiopicuschan/go-vp9/boolcoder"
 
 // Feature indices.
 const (

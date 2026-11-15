@@ -3,8 +3,8 @@ package modeinfo
 import (
 	"testing"
 
-	"github.com/mgvs/go-vp9/boolcoder"
-	"github.com/mgvs/go-vp9/compheader"
+	"github.com/aethiopicuschan/go-vp9/boolcoder"
+	"github.com/aethiopicuschan/go-vp9/compheader"
 )
 
 // encodeIntraMode writes an IntraMode onto a bool writer by traversing the

@@ -3,8 +3,8 @@ package partition
 import (
 	"testing"
 
-	"github.com/mgvs/go-vp9/boolcoder"
-	"github.com/mgvs/go-vp9/compheader"
+	"github.com/aethiopicuschan/go-vp9/boolcoder"
+	"github.com/aethiopicuschan/go-vp9/compheader"
 )
 
 // encodePartition writes a partition type onto the bool writer using the

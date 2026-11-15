@@ -3,9 +3,9 @@ package decoder
 import (
 	"testing"
 
-	"github.com/mgvs/go-vp9/blockmode"
-	"github.com/mgvs/go-vp9/ctx"
-	"github.com/mgvs/go-vp9/mv"
+	"github.com/aethiopicuschan/go-vp9/blockmode"
+	"github.com/aethiopicuschan/go-vp9/ctx"
+	"github.com/aethiopicuschan/go-vp9/mv"
 )
 
 func TestAppendSub8x8BlockZeroWithoutMVRefs(t *testing.T) {

@@ -1,6 +1,6 @@
 package modeinfo
 
-import "github.com/mgvs/go-vp9/boolcoder"
+import "github.com/aethiopicuschan/go-vp9/boolcoder"
 
 // KFYModeProbs is the VP9 keyframe luma-mode probability table
 // indexed by [above_y_mode][left_y_mode][9_probs].

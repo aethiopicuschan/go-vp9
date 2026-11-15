@@ -3,19 +3,19 @@ package reconstruct
 import (
 	"fmt"
 
-	"github.com/mgvs/go-vp9/blockmode"
-	"github.com/mgvs/go-vp9/boolcoder"
-	"github.com/mgvs/go-vp9/coeftoken"
-	"github.com/mgvs/go-vp9/compheader"
-	"github.com/mgvs/go-vp9/ctx"
-	"github.com/mgvs/go-vp9/dequant"
-	"github.com/mgvs/go-vp9/intra16"
-	"github.com/mgvs/go-vp9/mc16"
-	"github.com/mgvs/go-vp9/modeinfo"
-	"github.com/mgvs/go-vp9/mv"
-	"github.com/mgvs/go-vp9/refbuf"
-	"github.com/mgvs/go-vp9/transform"
-	"github.com/mgvs/go-vp9/wht"
+	"github.com/aethiopicuschan/go-vp9/blockmode"
+	"github.com/aethiopicuschan/go-vp9/boolcoder"
+	"github.com/aethiopicuschan/go-vp9/coeftoken"
+	"github.com/aethiopicuschan/go-vp9/compheader"
+	"github.com/aethiopicuschan/go-vp9/ctx"
+	"github.com/aethiopicuschan/go-vp9/dequant"
+	"github.com/aethiopicuschan/go-vp9/intra16"
+	"github.com/aethiopicuschan/go-vp9/mc16"
+	"github.com/aethiopicuschan/go-vp9/modeinfo"
+	"github.com/aethiopicuschan/go-vp9/mv"
+	"github.com/aethiopicuschan/go-vp9/refbuf"
+	"github.com/aethiopicuschan/go-vp9/transform"
+	"github.com/aethiopicuschan/go-vp9/wht"
 )
 
 var MaxVal16 = 255

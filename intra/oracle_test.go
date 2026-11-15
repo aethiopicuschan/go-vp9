@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mgvs/go-vp9/modeinfo"
+	"github.com/aethiopicuschan/go-vp9/modeinfo"
 )
 
 // TestIntraPredictVsLibvpx compares intra.Predict against libvpx reference DSP

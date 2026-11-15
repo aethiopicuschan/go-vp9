@@ -3,8 +3,8 @@ package coeftoken
 import (
 	"testing"
 
-	"github.com/mgvs/go-vp9/boolcoder"
-	"github.com/mgvs/go-vp9/compheader"
+	"github.com/aethiopicuschan/go-vp9/boolcoder"
+	"github.com/aethiopicuschan/go-vp9/compheader"
 )
 
 // trivialScan returns identity scan (raster order) for n positions.

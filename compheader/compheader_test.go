@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/mgvs/go-vp9/boolcoder"
+	"github.com/aethiopicuschan/go-vp9/boolcoder"
 )
 
 // ---- invRecenterNonneg unit tests ----

@@ -3,7 +3,7 @@
 // (UV). Both use the same binary tree; the probability tables differ.
 package modeinfo
 
-import "github.com/mgvs/go-vp9/boolcoder"
+import "github.com/aethiopicuschan/go-vp9/boolcoder"
 
 // IntraMode is a VP9 intra prediction mode (spec §7.5.4).
 type IntraMode int
