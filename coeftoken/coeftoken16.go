@@ -50,14 +50,27 @@ func DecodeBlock16(br *boolcoder.Reader, txSize, planeType, refType int,
 		}
 		p := &probs[txSize][pt][rt][bd][ctxIdx]
 
-		// EOB node: 0 → end of block.
-		if br.ReadBool(p[0]) == 0 {
+		// EOB node: 0 → end of block. Counted for backward adaptation: node 0
+		// is {EOB_MODEL_TOKEN, eob_branch - EOB_MODEL_TOKEN} (libvpx
+		// adapt_coef_probs), i.e. only positions where the EOB check is coded.
+		var cnt *[3][2]uint32
+		if counts != nil {
+			cnt = &counts.CoefProbs[txSize][pt][rt][bd][ctxIdx]
+		}
+		moreCoefs := br.ReadBool(p[0])
+		if cnt != nil {
+			cnt[0][moreCoefs]++
+		}
+		if moreCoefs == 0 {
 			break
 		}
 
 		// ZERO loop: consume runs of zero tokens; each skips re-reading the EOB
 		// node for the next position (libvpx inner while).
 		for br.ReadBool(p[1]) == 0 {
+			if cnt != nil {
+				cnt[1][0]++ // ZERO_TOKEN
+			}
 			tokenCache[scan[c]] = 0
 			c++
 			if c >= n {
@@ -73,15 +86,27 @@ func DecodeBlock16(br *boolcoder.Reader, txSize, planeType, refType int,
 				ctxIdx = 5
 			}
 			p = &probs[txSize][pt][rt][bd][ctxIdx]
+			if counts != nil {
+				cnt = &counts.CoefProbs[txSize][pt][rt][bd][ctxIdx]
+			}
+		}
+		if cnt != nil {
+			cnt[1][1]++ // non-zero token
 		}
 
 		// Non-zero token: decode value + energy class.
 		var val int
 		var energy uint8
 		if br.ReadBool(p[2]) == 0 {
+			if cnt != nil {
+				cnt[2][0]++ // ONE_TOKEN
+			}
 			val = 1
 			energy = 1
 		} else {
+			if cnt != nil {
+				cnt[2][1]++ // TWO_TOKEN (two or more)
+			}
 			pp := &pareto8Full[p[2]-1]
 			if br.ReadBool(pp[0]) == 1 {
 				// CAT tokens (val ≥ 5).

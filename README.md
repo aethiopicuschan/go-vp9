@@ -122,6 +122,20 @@ diff via per-edge loop-filter and per-block residual oracles.
 8. Pathological MVs more than 96 px past the frame edge (on-demand edge extension).
 9. Remove the env-gated oracle instrumentation.
 
+**Backward adaptation (`frame_parallel_decoding_mode=0`) — DONE.** The streams
+above were all encoded with frame-parallel mode on, so adaptation never ran;
+YouTube-style streams (frame_parallel=0, multi-tile, hidden alt-refs) desynced on
+the first frame after a key frame. Fixed against an instrumented `vpxdec`
+(per-frame probability/count table dumps): coefficient counts were not collected
+at all; forced partitions at frame edges must count the whole symbol; the implied
+`hp=1` bit of non-high-precision MVs is counted (and hp probs adapt only when the
+frame allows hp); intra frames adapt only coef probs and keep the other
+forward-updated tables. Found on the way: the 8-bit AC quantizer table tail
+(q index 232–255), loop-filter ref/mode delta scaling for `filter_level >= 32`,
+and the MV border clamp (`clamp_mv_to_umv_border_sb`) in inter prediction. The
+tile over-read check now equals libvpx `vpx_reader_has_error`. Regression streams:
+`decoder/adapt_stream_test.go`, `decoder/overread_stream_test.go`.
+
 Status snapshot: **six streams — 320×240 single-tile, 1272×720 4-tile, 1920×1080,
 a 2-pass alt-ref/compound stream (90 frames), and 10-bit + 12-bit profile-2
 streams (key + inter) — all decode 100 % bit-exact vs libvpx on every frame, all
@@ -189,7 +203,7 @@ real-stream-tested.
 | M17 | Loop-filter ref_delta / mode_delta + per-segment level | ✅ |
 | M18 | UV NZC context + zeroMV in InterModeCtx | ✅ |
 | M19 | Temporal MV candidates (co-located lookup) | ✅ |
-| M20 | Probability adaptation between frames | 🔶 coef adaptation verified; mode/mv adaptation untested |
+| M20 | Probability adaptation between frames | ✅ coef / mode / mv backward adaptation (`frame_parallel_decoding_mode=0`), see `decoder/adapt_stream_test.go` |
 
 ## Layout
 - `boolcoder/` — VP9 boolean arithmetic coder (M0).

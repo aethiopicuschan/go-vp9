@@ -389,9 +389,13 @@ func reconstructInter(br *boolcoder.Reader, probs *compheader.Probs, counts *com
 	compound := bm.RefFrame[1] != ctx.RefIntra
 	ref1 := refFrame(refs, bm.RefFrame[1])
 
-	// Luma sub-pel: VP9 filters are 1/16-pel (16 phases) but the MV is 1/8-pel,
-	// so the integer offset is mv>>3 and the filter phase is (mv&7)<<1 (the even
-	// 1/16-pel phases). See libvpx clamp_mv_to_umv_border_sb (mv_q4 = mv<<1).
+	// libvpx clamp_mv_to_umv_border_sb: MVs are converted to 1/16-pel (q4) and
+	// clamped so the reference block stays within the border the reference
+	// frame is extended by; the clamp can change the sub-pel phase too.
+	col0, row0 = clampMVQ4(col0, col, bsW, bsW, MiW4, 0), clampMVQ4(row0, row, bsH, bsH, MiH4, 0)
+	col1, row1 = clampMVQ4(col1, col, bsW, bsW, MiW4, 0), clampMVQ4(row1, row, bsH, bsH, MiH4, 0)
+	// Luma sub-pel: VP9 filters are 1/16-pel (16 phases) and the 1/8-pel MV was
+	// doubled to q4 above, so the integer offset is q4>>4 and the phase q4&15.
 	if bm.NumSubMV > 0 && ref0 != nil {
 		// Sub-8×8 inter: per-4×4 motion compensation — each 4×4 prediction unit
 		// uses its own MV (SubMV is duplicated for 4×8/8×4, so a flat 4×4 loop is
@@ -399,32 +403,32 @@ func reconstructInter(br *boolcoder.Reader, probs *compheader.Probs, counts *com
 		for sy := 0; sy < 2; sy++ {
 			for sx := 0; sx < 2; sx++ {
 				smv := bm.SubMV[sy*2+sx]
-				sc0, sr0 := int(smv[0].Col), int(smv[0].Row)
+				sc0, sr0 := clampMVQ4(int(smv[0].Col), col, bsW, bsW, MiW4, 0), clampMVQ4(int(smv[0].Row), row, bsH, bsH, MiH4, 0)
 				sRow, sCol := row+sy*4, col+sx*4
 				po := sy*4*bsW + sx*4
 				if compound && ref1 != nil {
-					sc1, sr1 := int(smv[1].Col), int(smv[1].Row)
-					b0 := ref0.YBase() + (sRow+(sr0>>3))*ref0.YStride + (sCol + (sc0 >> 3))
-					b1 := ref1.YBase() + (sRow+(sr1>>3))*ref1.YStride + (sCol + (sc1 >> 3))
-					mc.PredictComp(ref0.Y, b0, ref0.YStride, (sc0&7)<<1, (sr0&7)<<1, filt,
-						ref1.Y, b1, ref1.YStride, (sc1&7)<<1, (sr1&7)<<1, filt, 4, 4, pred[po:], bsW)
+					sc1, sr1 := clampMVQ4(int(smv[1].Col), col, bsW, bsW, MiW4, 0), clampMVQ4(int(smv[1].Row), row, bsH, bsH, MiH4, 0)
+					b0 := ref0.YBase() + (sRow+(sr0>>4))*ref0.YStride + (sCol + (sc0 >> 4))
+					b1 := ref1.YBase() + (sRow+(sr1>>4))*ref1.YStride + (sCol + (sc1 >> 4))
+					mc.PredictComp(ref0.Y, b0, ref0.YStride, sc0&15, sr0&15, filt,
+						ref1.Y, b1, ref1.YStride, sc1&15, sr1&15, filt, 4, 4, pred[po:], bsW)
 				} else {
-					b0 := ref0.YBase() + (sRow+(sr0>>3))*ref0.YStride + (sCol + (sc0 >> 3))
-					mc.Predict(ref0.Y, b0, ref0.YStride, 4, 4, (sc0&7)<<1, (sr0&7)<<1, filt, pred[po:], bsW)
+					b0 := ref0.YBase() + (sRow+(sr0>>4))*ref0.YStride + (sCol + (sc0 >> 4))
+					mc.Predict(ref0.Y, b0, ref0.YStride, 4, 4, sc0&15, sr0&15, filt, pred[po:], bsW)
 				}
 			}
 		}
 	} else if ref0 != nil && compound && ref1 != nil {
-		base0 := ref0.YBase() + (row+(row0>>3))*ref0.YStride + (col + (col0 >> 3))
-		base1 := ref1.YBase() + (row+(row1>>3))*ref1.YStride + (col + (col1 >> 3))
+		base0 := ref0.YBase() + (row+(row0>>4))*ref0.YStride + (col + (col0 >> 4))
+		base1 := ref1.YBase() + (row+(row1>>4))*ref1.YStride + (col + (col1 >> 4))
 		mc.PredictComp(
-			ref0.Y, base0, ref0.YStride, (col0&7)<<1, (row0&7)<<1, filt,
-			ref1.Y, base1, ref1.YStride, (col1&7)<<1, (row1&7)<<1, filt,
+			ref0.Y, base0, ref0.YStride, col0&15, row0&15, filt,
+			ref1.Y, base1, ref1.YStride, col1&15, row1&15, filt,
 			bsW, bsH, pred, bsW,
 		)
 	} else if ref0 != nil {
-		base0 := ref0.YBase() + (row+(row0>>3))*ref0.YStride + (col + (col0 >> 3))
-		mc.Predict(ref0.Y, base0, ref0.YStride, bsW, bsH, (col0&7)<<1, (row0&7)<<1, filt, pred, bsW)
+		base0 := ref0.YBase() + (row+(row0>>4))*ref0.YStride + (col + (col0 >> 4))
+		mc.Predict(ref0.Y, base0, ref0.YStride, bsW, bsH, col0&15, row0&15, filt, pred, bsW)
 	}
 
 	if !bm.Skip {
@@ -448,6 +452,7 @@ func reconstructInter(br *boolcoder.Reader, probs *compheader.Probs, counts *com
 	// Chroma sub-pel (4:2:0): the luma 1/8-pel MV equals a 1/16-pel chroma MV
 	// (1 chroma px = 2 luma px), so the integer offset is mv>>4 and the filter
 	// phase is mv&15 — all 16 phases (libvpx clamp_mv_to_umv_border_sb, ss=1).
+	// Taken from the unclamped block MVs: the clamp is per plane.
 	col0UV, row0UV := int(mv0.Col), int(mv0.Row)
 	col1UV, row1UV := int(mv1.Col), int(mv1.Row)
 	if bm.NumSubMV > 0 {
@@ -457,6 +462,8 @@ func reconstructInter(br *boolcoder.Reader, probs *compheader.Probs, counts *com
 		col1UV, row1UV = avgSubMV(bm.SubMV, 1)
 	}
 
+	col0UV, row0UV = clampMVQ4(col0UV, col, bsW, bsW/2, MiW4, 1), clampMVQ4(row0UV, row, bsH, bsH/2, MiH4, 1)
+	col1UV, row1UV = clampMVQ4(col1UV, col, bsW, bsW/2, MiW4, 1), clampMVQ4(row1UV, row, bsH, bsH/2, MiH4, 1)
 	var predUVBuf [32 * 32]byte
 	for pi := 0; pi < 2; pi++ {
 		var dstBuf []byte
@@ -912,4 +919,35 @@ func anyNonzero(c []int16) bool {
 		}
 	}
 	return false
+}
+
+// clampMVQ4 is one component of libvpx clamp_mv_to_umv_border_sb
+// (vp9_reconinter.h), as used by dec_build_inter_predictors: it converts a
+// 1/8-pel luma MV component to the plane's 1/16-pel units and clamps it to
+// [mb_to_left_edge - spel_left, mb_to_right_edge + spel_right].
+//
+// mv: MV component in 1/8 luma pel (for 4:2:0 chroma that is already 1/16
+// chroma pel). pos, blk: the prediction block's luma position and size in
+// pixels along this axis (the whole 8x8 for sub-8x8 blocks). planeBW: the
+// block size in this plane's pixels. mi4: frame size in 4x4 units along this
+// axis (MiW4 / MiH4). ss: plane subsampling (0 luma, 1 chroma).
+func clampMVQ4(mv, pos, blk, planeBW, mi4, ss int) int {
+	mul := 1 << uint(1-ss)
+	q4 := mv * mul
+	if mi4 <= 0 {
+		return q4
+	}
+	// libvpx works on the 8x8 MI grid: mi_cols = ceil(width / 8).
+	frame := (mi4 + 1) / 2 * 8
+	toLo := -pos * 8                // mb_to_left_edge (1/8 pel)
+	toHi := (frame - blk - pos) * 8 // mb_to_right_edge
+	spel := (4 + planeBW) << 4      // (VP9_INTERP_EXTEND + bw) << SUBPEL_BITS
+	lo, hi := toLo*mul-spel, toHi*mul+spel-16
+	if q4 < lo {
+		return lo
+	}
+	if q4 > hi {
+		return hi
+	}
+	return q4
 }

@@ -1,0 +1,38 @@
+// Generates boolcoder/testdata/vpx_reader_golden.txt from the real libvpx
+// vpx_reader (vpx_dsp/bitreader.[ch]). One line per case:
+//   <buffer hex or "-"> <marker bit> <probs hex, 2 digits per read> <bits> <errs>
+// marker = return value of vpx_reader_init; bits[i] = vpx_read(r, probs[i]);
+// errs[0] = vpx_reader_has_error after init, errs[i+1] = after read i.
+#include <stdio.h>
+#include <stdint.h>
+#include "vpx_dsp/bitreader.h"
+static uint32_t s = 2026;
+static uint32_t rnd(void) { s = s * 1664525u + 1013904223u; return s >> 8; }
+int main(void) {
+  printf("# Generated from libvpx (vpx_dsp/bitreader.c) by /tmp harness g.c; see boolcoder_overread_test.go\n");
+  for (int c = 0; c < 160; c++) {
+    int n = c < 14 ? c : rnd() % 14;   // 0..13 bytes: crosses the 8-byte window
+    uint8_t buf[64] = { 0 };
+    int mode = c % 3;
+    for (int i = 0; i < n; i++) buf[i] = mode == 0 ? 0 : mode == 1 ? rnd() & 0xff : (rnd() & 0x7f);
+    vpx_reader r;
+    int marker = vpx_reader_init(&r, buf, n, NULL, NULL);
+    int reads = 8 * n + 12;
+    char probs[1024], bits[512], errs[512];
+    int e = 0;
+    errs[e++] = '0' + vpx_reader_has_error(&r);
+    for (int i = 0; i < reads; i++) {
+      int p = 1 + rnd() % 255;
+      if (mode == 0) p = 128;                       // 1 bit per read: hits every position
+      else if (rnd() % 4 == 0) p = (rnd() & 1) ? 1 : 255;
+      int b = vpx_read(&r, p);
+      sprintf(probs + 2 * i, "%02x", p);
+      bits[i] = '0' + b;
+      errs[e++] = '0' + vpx_reader_has_error(&r);
+    }
+    bits[reads] = 0; errs[e] = 0;
+    if (n == 0) printf("-"); else for (int i = 0; i < n; i++) printf("%02x", buf[i]);
+    printf(" %d %s %s %s\n", marker, probs, bits, errs);
+  }
+  return 0;
+}

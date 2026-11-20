@@ -1,0 +1,96 @@
+# stream	op	arg	libvpx verdict	md5 of vpxdec --i420 output	libvpx message
+# Recorded from libvpx vpxdec (git 18656c2) by tiles2_key_corrupt_gen.py.txt; checked by overread_stream_test.go
+tiles2_key.ivf	orig	0	OK	2d75020904f9c35fcb2a34f537e83efa	-
+tiles2_key.ivf	trunc_last	1	ERR	-	Additional information: Failed to decode tile data
+tiles2_key.ivf	trunc_last	2	ERR	-	Additional information: Failed to decode tile data
+tiles2_key.ivf	trunc_last	3	ERR	-	Additional information: Failed to decode tile data
+tiles2_key.ivf	trunc_last	4	ERR	-	Additional information: Failed to decode tile data
+tiles2_key.ivf	trunc_last	5	ERR	-	Additional information: Failed to decode tile data
+tiles2_key.ivf	trunc_last	6	ERR	-	Additional information: Failed to decode tile data
+tiles2_key.ivf	trunc_last	7	ERR	-	Additional information: Failed to decode tile data
+tiles2_key.ivf	trunc_last	8	ERR	-	Additional information: Failed to decode tile data
+tiles2_key.ivf	trunc_last	16	ERR	-	-
+tiles2_key.ivf	trunc_last	64	ERR	-	Additional information: Failed to decode tile data
+tiles2_key.ivf	trunc_last	805	ERR	-	Additional information: Failed to decode tile data
+tiles2_key.ivf	trunc_last	1609	ERR	-	Additional information: Failed to decode tile data
+tiles2_key.ivf	trunc_last	1610	ERR	-	Additional information: Failed to decode tile data
+tiles2_key.ivf	trunc_last	1611	ERR	-	Additional information: Truncated packet or corrupt tile length
+tiles2_key.ivf	trunc_last	1612	ERR	-	Additional information: Truncated packet or corrupt tile size
+tiles2_key.ivf	trunc_last	2500	ERR	-	-
+tiles2_key.ivf	zero_last	1	OK	782af9e9aad4dbfb81bb0738237f13ee	-
+tiles2_key.ivf	zero_last	2	OK	9d697f5b1b05473c6973e2406bc592ac	-
+tiles2_key.ivf	zero_last	3	ERR	-	Additional information: Failed to decode tile data
+tiles2_key.ivf	zero_last	4	ERR	-	Additional information: Failed to decode tile data
+tiles2_key.ivf	zero_last	8	ERR	-	Additional information: Failed to decode tile data
+tiles2_key.ivf	zero_last	805	OK	db4d1bd731ce21e8c06105b40b1cbf9d	-
+tiles2_key.ivf	ff_last	1	OK	2d75020904f9c35fcb2a34f537e83efa	-
+tiles2_key.ivf	ff_last	2	OK	ee166da27ec513fe32dabd919aa7d216	-
+tiles2_key.ivf	ff_last	3	ERR	-	Additional information: Failed to decode tile data
+tiles2_key.ivf	ff_last	4	ERR	-	Additional information: Failed to decode tile data
+tiles2_key.ivf	ff_last	8	ERR	-	Additional information: Failed to decode tile data
+tiles2_key.ivf	ff_last	805	ERR	-	Additional information: Failed to decode tile data
+tiles2_key.ivf	zero_first_half	0	OK	dcb3cd01569e29401c1ac151afb55fc7	-
+tiles2_key.ivf	ff_first_half	0	OK	f5141c6ee0efa1224d4781b835faef54	-
+tiles2_key.ivf	tile_size	1778	ERR	-	Additional information: Failed to allocate bool decoder 1
+tiles2_key.ivf	tile_size	1777	ERR	-	Additional information: Failed to decode tile data
+tiles2_key.ivf	tile_size	1771	ERR	-	Additional information: Failed to allocate bool decoder 1
+tiles2_key.ivf	tile_size	889	ERR	-	Additional information: Failed to allocate bool decoder 1
+tiles2_key.ivf	tile_size	1780	ERR	-	Additional information: Failed to allocate bool decoder 1
+tiles2_key.ivf	tile_size	1787	ERR	-	Additional information: Failed to decode tile data
+tiles2_key.ivf	tile_size	3389	ERR	-	Additional information: Failed to decode tile data
+tiles2_key.ivf	tile_size	3390	ERR	-	Additional information: Truncated packet or corrupt tile length
+tiles2_key.ivf	tile_size	3391	ERR	-	Additional information: Truncated packet or corrupt tile size
+tiles2_key.ivf	tile_size	2147483647	ERR	-	Additional information: Truncated packet or corrupt tile size
+tiles2_key.ivf	tile_size	4294967295	ERR	-	Additional information: Truncated packet or corrupt tile size
+tiles2_key.ivf	tile_size	0	ERR	-	Additional information: Truncated packet or corrupt tile length
+tiles2_key.ivf	tile_size	1	ERR	-	Additional information: Failed to allocate bool decoder 1
+tiles2_key.ivf	tile_size	2	ERR	-	Additional information: Failed to allocate bool decoder 1
+tiles2_key.ivf	marker_first	0	ERR	-	Additional information: Failed to allocate bool decoder 1
+tiles2_key.ivf	marker_last	0	ERR	-	Additional information: Failed to allocate bool decoder 1
+tiles2_key_p2.ivf	orig	0	OK	56146da18135531fcfc9bcd50718809e	-
+tiles2_key_p2.ivf	trunc_last	1	ERR	-	-
+tiles2_key_p2.ivf	trunc_last	2	ERR	-	Additional information: Failed to decode tile data
+tiles2_key_p2.ivf	trunc_last	3	ERR	-	Additional information: Failed to decode tile data
+tiles2_key_p2.ivf	trunc_last	4	ERR	-	Additional information: Failed to decode tile data
+tiles2_key_p2.ivf	trunc_last	5	ERR	-	Additional information: Failed to decode tile data
+tiles2_key_p2.ivf	trunc_last	6	ERR	-	Additional information: Failed to decode tile data
+tiles2_key_p2.ivf	trunc_last	7	ERR	-	Additional information: Failed to decode tile data
+tiles2_key_p2.ivf	trunc_last	8	ERR	-	Additional information: Failed to decode tile data
+tiles2_key_p2.ivf	trunc_last	16	ERR	-	Additional information: Failed to decode tile data
+tiles2_key_p2.ivf	trunc_last	64	ERR	-	Additional information: Failed to decode tile data
+tiles2_key_p2.ivf	trunc_last	805	ERR	-	Additional information: Failed to decode tile data
+tiles2_key_p2.ivf	trunc_last	1608	ERR	-	Additional information: Failed to decode tile data
+tiles2_key_p2.ivf	trunc_last	1609	ERR	-	Additional information: Failed to decode tile data
+tiles2_key_p2.ivf	trunc_last	1610	ERR	-	Additional information: Truncated packet or corrupt tile length
+tiles2_key_p2.ivf	trunc_last	1611	ERR	-	Additional information: Truncated packet or corrupt tile size
+tiles2_key_p2.ivf	trunc_last	2488	ERR	-	Additional information: Truncated packet or corrupt tile size
+tiles2_key_p2.ivf	zero_last	1	OK	4cfff77a30ae913ea336d54b60779773	-
+tiles2_key_p2.ivf	zero_last	2	OK	16a57a6eeb037fae43f41dc6e96c3196	-
+tiles2_key_p2.ivf	zero_last	3	ERR	-	Additional information: Failed to decode tile data
+tiles2_key_p2.ivf	zero_last	4	ERR	-	Additional information: Failed to decode tile data
+tiles2_key_p2.ivf	zero_last	8	ERR	-	Additional information: Failed to decode tile data
+tiles2_key_p2.ivf	zero_last	805	OK	93361091edcf17c1fea4a1224a209b52	-
+tiles2_key_p2.ivf	ff_last	1	OK	56146da18135531fcfc9bcd50718809e	-
+tiles2_key_p2.ivf	ff_last	2	ERR	-	Additional information: Failed to decode tile data
+tiles2_key_p2.ivf	ff_last	3	ERR	-	Additional information: Failed to decode tile data
+tiles2_key_p2.ivf	ff_last	4	ERR	-	Additional information: Failed to decode tile data
+tiles2_key_p2.ivf	ff_last	8	ERR	-	Additional information: Failed to decode tile data
+tiles2_key_p2.ivf	ff_last	805	ERR	-	Additional information: Invalid frame marker
+tiles2_key_p2.ivf	zero_first_half	0	OK	03a9e43ddb7a8f9ec556172fe4df8aec	-
+tiles2_key_p2.ivf	ff_first_half	0	OK	87a6c1a72df091b9165f1c423ba911d2	-
+tiles2_key_p2.ivf	tile_size	1755	ERR	-	Additional information: Failed to allocate bool decoder 1
+tiles2_key_p2.ivf	tile_size	1754	ERR	-	Additional information: Failed to allocate bool decoder 1
+tiles2_key_p2.ivf	tile_size	1748	ERR	-	Additional information: Failed to decode tile data
+tiles2_key_p2.ivf	tile_size	878	ERR	-	Additional information: Failed to allocate bool decoder 1
+tiles2_key_p2.ivf	tile_size	1757	ERR	-	Additional information: Failed to allocate bool decoder 1
+tiles2_key_p2.ivf	tile_size	1764	ERR	-	Additional information: Failed to allocate bool decoder 1
+tiles2_key_p2.ivf	tile_size	3365	ERR	-	Additional information: Failed to allocate bool decoder 1
+tiles2_key_p2.ivf	tile_size	3366	ERR	-	Additional information: Truncated packet or corrupt tile length
+tiles2_key_p2.ivf	tile_size	3367	ERR	-	Additional information: Truncated packet or corrupt tile size
+tiles2_key_p2.ivf	tile_size	2147483647	ERR	-	Additional information: Truncated packet or corrupt tile size
+tiles2_key_p2.ivf	tile_size	4294967295	ERR	-	Additional information: Truncated packet or corrupt tile size
+tiles2_key_p2.ivf	tile_size	0	ERR	-	Additional information: Truncated packet or corrupt tile length
+tiles2_key_p2.ivf	tile_size	1	ERR	-	Additional information: Failed to allocate bool decoder 1
+tiles2_key_p2.ivf	tile_size	2	ERR	-	Additional information: Failed to allocate bool decoder 1
+tiles2_key_p2.ivf	marker_first	0	ERR	-	Additional information: Failed to allocate bool decoder 1
+tiles2_key_p2.ivf	marker_last	0	ERR	-	Additional information: Failed to allocate bool decoder 1

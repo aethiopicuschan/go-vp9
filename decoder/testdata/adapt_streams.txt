@@ -1,0 +1,47 @@
+Synthetic VP9 regression streams (ffmpeg + libvpx-vp9 encoder). All: 4:2:0, error_resilient=0; profile 0 8-bit unless the name ends in _p2 (profile 2, 10-bit).
+NAME.md5: line "whole <md5>" = md5 of the full raw yuv420p output (all shown frames concatenated, Y then U then V per frame);
+          lines "frame i <md5>" = md5 of each shown frame's w*h*3/2 bytes. One shown frame per IVF packet (hidden alt-refs live inside superframes).
+Reference: ffmpeg -c:v libvpx-vp9 -i NAME.ivf -pix_fmt yuv420p -f rawvideo NAME.yuv   (native ffvp9 decoder output verified identical)
+
+L=/tmp/plog   # any writable prefix for the 2-pass log
+
+# fp0_1tile_key_inter.ivf  (2114 B, 64x64, 2 frames: key + inter, 1 tile, frame_parallel=0, ctx 0)
+#   HEAD c2b2817: no error, frame 1 pixel mismatch (silent). Minimal repro of the key-frame backward-adaptation bug.
+ffmpeg -f lavfi -i testsrc2=size=64x64:rate=30 -frames:v 2 -c:v libvpx-vp9 -frame-parallel 0 -auto-alt-ref 0 -lag-in-frames 0 -b:v 200k fp0_1tile_key_inter.ivf
+
+# fp0_2tile_altref.ivf  (11575 B, 512x288, 20 shown frames / 22 coded, 2 tile cols, frame_parallel=0,
+#   2 hidden alt-ref frames in superframes using frame_context_idx=1, shown frames ctx 0, switchable + fixed interp filters)
+#   HEAD: "entropy desync (bitstream over-read)" at packet 1; check disabled: 19/20 frames mismatch from frame 1.
+O="-frames:v 20 -c:v libvpx-vp9 -tile-columns 1 -frame-parallel 0 -auto-alt-ref 1 -lag-in-frames 16 -arnr-maxframes 7 -g 60 -b:v 150k"
+ffmpeg -f lavfi -i testsrc2=size=512x288:rate=30 $O -pass 1 -passlogfile $L-a -f null -
+ffmpeg -f lavfi -i testsrc2=size=512x288:rate=30 $O -pass 2 -passlogfile $L-a fp0_2tile_altref.ivf
+
+# fp1_2tile_altref_control.ivf (11632 B) same as above but -frame-parallel 1: bit-exact at HEAD (control; must stay bit-exact).
+O="-frames:v 20 -c:v libvpx-vp9 -tile-columns 1 -frame-parallel 1 -auto-alt-ref 1 -lag-in-frames 16 -arnr-maxframes 7 -g 60 -b:v 150k"
+(same two-pass commands with testsrc2=size=512x288:rate=30)
+
+# fp0_4tile_altref.ivf (25229 B, 1024x576, 20 shown / 22 coded, 4 tile cols, frame_parallel=0, hidden frames ctx 1)
+#   HEAD: over-read error at packet 1; check disabled: 19/20 mismatch from frame 1.
+O="-frames:v 20 -c:v libvpx-vp9 -tile-columns 2 -frame-parallel 0 -auto-alt-ref 1 -lag-in-frames 16 -arnr-maxframes 7 -g 60 -b:v 300k"
+(two-pass with testsrc2=size=1024x576:rate=30)
+
+# fp0_4tile_flat_altref.ivf (1503 B, 1024x576, 20 frames, 4 tile cols, flat smptebars -> tiny tiles; no hidden frames were produced)
+#   HEAD: over-read error at packet 1; check disabled: 19/20 mismatch from frame 1.
+O="-frames:v 20 -c:v libvpx-vp9 -tile-columns 2 -frame-parallel 0 -auto-alt-ref 1 -lag-in-frames 16 -g 60 -b:v 100k"
+(two-pass with smptebars=size=1024x576:rate=30)
+
+# fp0_2tile_altref_p2.ivf (6554 B, 512x288, 10-bit profile 2, 10 shown / 11 coded, 2 tile cols, frame_parallel=0, hidden frame ctx 1)
+O="-frames:v 10 -c:v libvpx-vp9 -tile-columns 1 -frame-parallel 0 -auto-alt-ref 1 -lag-in-frames 16 -arnr-maxframes 7 -g 60 -b:v 150k -pix_fmt yuv420p10le -profile:v 2"
+(two-pass with testsrc2=size=512x288:rate=30; reference with -pix_fmt yuv420p10le)
+
+# fp0_qmax.ivf (797 B, 320x192, 6 frames, 1 tile, frame_parallel=0, base_q_idx=255)
+ffmpeg -f lavfi -i testsrc2=size=320x192:rate=30 -frames:v 6 -c:v libvpx-vp9 -frame-parallel 0 -qmin 63 -qmax 63 -b:v 10k -auto-alt-ref 0 -lag-in-frames 0 fp0_qmax.ivf
+
+# In this repo NAME.md5 holds only the per-shown-frame md5s, one per line.
+
+# Common options for the streams below: -c:v libvpx-vp9 -frame-parallel 0 -auto-alt-ref 0 -lag-in-frames 0
+# (the _p2 variants add -pix_fmt yuv420p10le -profile:v 2; reference with -pix_fmt yuv420p10le)
+# fp0_part_nocols_160x64:  testsrc2=size=160x64:rate=30  -frames:v 6  -b:v 100k
+# fp0_part_edges_80x80[_p2]: testsrc2=size=80x80:rate=30 -frames:v 6  -b:v 100k
+# fp0_hpzero_320x192[_p2]: testsrc2=size=320x192:rate=30 -frames:v 12 -b:v 80k
+# fp0_lf32_320x192[_p2]:   testsrc2=size=320x192:rate=30 -frames:v 30 -b:v 20k

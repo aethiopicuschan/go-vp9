@@ -73,12 +73,13 @@ func LevelForBlock(
 		if r < 0 || r >= 4 {
 			r = 0
 		}
-		level += refDeltas[r]
+		scale := 1 << uint(baseLevel>>5)
+		level += refDeltas[r] * scale
 		if isInter {
 			if isZeroMV {
-				level += modeDeltas[0]
+				level += modeDeltas[0] * scale
 			} else {
-				level += modeDeltas[1]
+				level += modeDeltas[1] * scale
 			}
 		}
 		if level < 0 {

@@ -29,7 +29,8 @@ type Reader struct {
 	pos     int    // next byte index
 	value   uint64 // high bits hold the coded window
 	rng     uint32 // current range, 128..255 after renorm
-	bitsAvl int    // number of valid value bits beyond the top byte boundary
+	bitsAvl int    // real (buffer) bits currently held in value, top byte included; negative = zero-fill bits already shifted out
+	marker  bool   // NewReaderVP9: the leading marker bit was 1 (libvpx init error)
 
 	// optional tracing (debug only)
 	traceN     int
@@ -51,7 +52,7 @@ func NewReader(buf []byte) *Reader {
 // align with the stream. Use NewReader (no marker) for the encoder roundtrip.
 func NewReaderVP9(buf []byte) *Reader {
 	r := NewReader(buf)
-	r.ReadBit() // marker bit (always 0 in a valid stream)
+	r.marker = r.ReadBit() != 0 // marker bit (always 0 in a valid stream)
 	return r
 }
 
@@ -134,20 +135,64 @@ func (r *Reader) State() (rng uint32, topByte uint8) {
 	return r.rng, uint8(r.value >> 56)
 }
 
-// BitPos returns the number of bits consumed from the buffer so far.
+// BitPos returns the number of bits shifted out of the value register so far
+// (renormalisation shifts; a symbol may consume zero bits). It keeps counting
+// past the end of the buffer, where the register is fed with zeros.
 func (r *Reader) BitPos() int {
 	return r.pos*8 - r.bitsAvl
 }
 
-// Overread reports whether the decoder has consumed more bits than the buffer
-// contained — i.e. the bool window has drained past the end of the partition.
-// In a valid stream the trailing padding keeps bitsAvl >= 0 through the final
-// symbol, so a negative value means an entropy desync (or a truncated tile).
-// Callers use this after a tile/partition to reject a corrupt frame instead of
-// reconstructing garbage pixels.
+// overreadSlackBits is the number of bits at the tail of a partition that the
+// decoder must NOT have shifted out: libvpx requires the 8-bit arithmetic
+// window (the top byte of its value register) to consist of real buffer bits
+// at all times. See Overread.
+const overreadSlackBits = 8
+
+// Overread reports whether the decoder has shifted zero-fill (bits past the
+// end of the partition) into its 8-bit arithmetic window. It is the exact
+// equivalent of libvpx's vpx_reader_has_error (vpx_dsp/bitreader.h), which the
+// VP9 decoder evaluates after every block (vp9_decodeframe.c decode_block:
+// "xd->corrupted |= vpx_reader_has_error(r)") and turns into the fatal
+// "Failed to decode tile data" / "Decode failed. Frame data is corrupted."
+//
+// libvpx keeps `count` = (real bits in the value register) - 8 and, on the
+// fill that exhausts the buffer, adds LOTS_OF_BITS to it; has_error is
+// `count > BD_VALUE_SIZE && count < LOTS_OF_BITS`, i.e. "the buffer is
+// exhausted and fewer than 8 real bits remain in the register". Expressed in
+// stream position, with S = bits shifted out of the register so far (BitPos)
+// and N = 8*len(buf):
+//
+//	no error  <=>  S <= N-8
+//	error     <=>  S >  N-8
+//
+// So the bits the decoder may consume stop 8 bits short of the end of the
+// buffer: reading zeros beyond the buffer into the *look-ahead* part of the
+// register is fine (and routine: the register is topped up with zeros as soon
+// as the data runs out), but as soon as one zero-fill bit enters the window
+// that is compared against the split, the partition is corrupt. A libvpx
+// encoder never produces that: vpx_stop_encode flushes 32 padding bits, which
+// makes every tile that decodes in sync end at or before the limit (measured
+// on libvpx-encoded tiles: 1..6 bits before it, so the limit is tight and the
+// "8" must not be approximated). An empty partition is always an error, a
+// one-byte partition as soon as a single bit has been consumed.
+//
+// The condition is monotonic (S only grows), so evaluating it once after the
+// last block of a tile gives the same verdict as libvpx's per-block sticky
+// flag. (libvpx's own flag would clear again after 2^30 further bits because
+// `count` wraps through a second LOTS_OF_BITS fill; that is not reproduced.)
+//
+// Callers use this after a tile/partition to reject a corrupt or desynced
+// frame instead of reconstructing garbage pixels.
 func (r *Reader) Overread() bool {
-	return r.pos >= len(r.buf) && r.bitsAvl < 0
+	return r.BitPos() > len(r.buf)*8-overreadSlackBits
 }
+
+// MarkerError reports whether the leading marker bit consumed by NewReaderVP9
+// was 1. libvpx's vpx_reader_init returns that bit as its error status and the
+// VP9 decoder aborts the frame when it is set (setup_token_decoder for tiles,
+// read_compressed_header for the compressed header). Always false for readers
+// made with NewReader.
+func (r *Reader) MarkerError() bool { return r.marker }
 
 // TraceFunc is called for each ReadBool when tracing is active.
 // label: caller-supplied context; prob: boolean prob; rng: range before read;

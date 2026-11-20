@@ -15,8 +15,8 @@ func TestACQuantBoundary(t *testing.T) {
 	if ACQuant(0) != 4 {
 		t.Fatalf("ACQuant(0) = %d, want 4", ACQuant(0))
 	}
-	if ACQuant(255) != 1880 {
-		t.Fatalf("ACQuant(255) = %d, want 1880", ACQuant(255))
+	if ACQuant(255) != 1828 {
+		t.Fatalf("ACQuant(255) = %d, want 1828", ACQuant(255))
 	}
 }
 

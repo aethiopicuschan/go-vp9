@@ -55,10 +55,18 @@ func ReadForced(br *boolcoder.Reader, ctx int, probs [16][3]uint8, counts *comph
 	if hasRows && hasCols {
 		return Type(br.ReadTreeCount(partitionTree, p, c))
 	}
+	// Forced cases: libvpx read_partition increments counts->partition[ctx][p]
+	// for the resulting symbol even when only one bit (or none) is coded, and
+	// the adaptation derives every tree node's branch counts from the symbol
+	// counts. Record the full tree path of the symbol, not just the coded bit.
 	if !hasRows && hasCols {
 		bit := br.ReadBool(p[1])
 		if c != nil {
+			c[0][1]++
 			c[1][bit]++
+			if bit == 1 {
+				c[2][1]++
+			}
 		}
 		if bit == 1 {
 			return Split
@@ -68,12 +76,19 @@ func ReadForced(br *boolcoder.Reader, ctx int, probs [16][3]uint8, counts *comph
 	if hasRows && !hasCols {
 		bit := br.ReadBool(p[2])
 		if c != nil {
+			c[0][1]++
+			c[1][1]++
 			c[2][bit]++
 		}
 		if bit == 1 {
 			return Split
 		}
 		return Vert
+	}
+	if c != nil {
+		c[0][1]++
+		c[1][1]++
+		c[2][1]++
 	}
 	return Split
 }

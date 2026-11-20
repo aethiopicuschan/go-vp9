@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+# Records what the real libvpx decoder (vpxdec) does with corrupted variants of
+# a 1-frame, 2-tile-column IVF. Output (TSV): stream op arg verdict md5 message
+#   verdict = OK (frame decoded) / ERR (vpx_codec_decode failed)
+#   md5     = md5 of vpxdec --i420 output for OK rows (16-bit LE for high bitdepth)
+# usage: mkcorrupt.py <stream.ivf> <scratch dir> <vpxdec> <last tile size> <first tile size>
+# The Go test decoder/overread_stream_test.go applies the same ops.
+import struct, subprocess, sys, hashlib, os
+src, outdir, vpxdec = sys.argv[1], sys.argv[2], sys.argv[3]
+d = open(src, 'rb').read()
+hdr, pay = d[:32], d[44:]
+T1, T0 = int(sys.argv[4]), int(sys.argv[5])
+P = len(pay)
+t1 = P - T1; t0 = t1 - T0; mk = t0 - 4
+assert len(d) == 44 + struct.unpack('<I', d[32:36])[0], "expected a single-frame IVF"
+assert struct.unpack('>I', pay[mk:mk+4])[0] == T0, "tile size marker not where expected"
+def emit(op, arg, p):
+    path = os.path.join(outdir, f'{op}_{arg}.ivf')
+    open(path, 'wb').write(hdr + struct.pack('<IQ', len(p), 0) + p)
+    out = path[:-4] + '.yuv'
+    if os.path.exists(out): os.remove(out)
+    r = subprocess.run([vpxdec, '--i420', '-o', out, path], capture_output=True)
+    ok = r.returncode == 0 and os.path.exists(out) and os.path.getsize(out) > 0
+    md5 = hashlib.md5(open(out, 'rb').read()).hexdigest() if ok else '-'
+    msg = [m.split(': ', 1)[-1] for m in r.stderr.decode(errors='replace').splitlines() if 'Additional information' in m]
+    print('\t'.join([os.path.basename(src), op, str(arg), 'OK' if ok else 'ERR', md5, msg[0] if msg else '-']))
+emit('orig', 0, pay)
+# drop the last k bytes of the packet (= of the last tile)
+for k in list(range(1, 9)) + [16, 64, T1 // 2, T1 - 2, T1 - 1, T1, T1 + 1, T1 + T0 // 2]:
+    emit('trunc_last', k, pay[:P - k])
+# overwrite the last k bytes of the last tile with 0x00 / 0xff (length kept)
+for k in [1, 2, 3, 4, 8, T1 // 2]:
+    emit('zero_last', k, pay[:P - k] + bytes(k))
+for k in [1, 2, 3, 4, 8, T1 // 2]:
+    emit('ff_last', k, pay[:P - k] + b'\xff' * k)
+# overwrite the second half of the first tile
+emit('zero_first_half', 0, pay[:t0 + T0 // 2] + bytes(T0 - T0 // 2) + pay[t1:])
+emit('ff_first_half', 0, pay[:t0 + T0 // 2] + b'\xff' * (T0 - T0 // 2) + pay[t1:])
+# rewrite the first tile's 4-byte size marker
+for v in [T0 - 1, T0 - 2, T0 - 8, T0 // 2, T0 + 1, T0 + 8, T0 + T1 - 1, T0 + T1, T0 + T1 + 1, 0x7fffffff, 0xffffffff, 0, 1, 2]:
+    emit('tile_size', v, pay[:mk] + struct.pack('>I', v) + pay[mk + 4:])
+# set the bool-decoder marker bit (MSB of a tile's first byte)
+emit('marker_first', 0, pay[:t0] + bytes([pay[t0] | 0x80]) + pay[t0 + 1:])
+emit('marker_last', 0, pay[:t1] + bytes([pay[t1] | 0x80]) + pay[t1 + 1:])

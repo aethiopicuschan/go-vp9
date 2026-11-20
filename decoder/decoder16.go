@@ -293,7 +293,10 @@ func (d *Decoder) decodeOneFrame16(payload []byte) (*refbuf.Frame16, error) {
 	counts := new(compheader.Counts)
 
 	const sbN4 = 16   // superblock = 64 px = 16 4×4 units
-	overread := false // any tile's bool-coder drained past its data (desync)
+	// libvpx's two per-tile bool-decoder error conditions (both fatal there):
+	// markerErr = vpx_reader_init saw a 1 marker bit; overread =
+	// vpx_reader_has_error, i.e. zero-fill reached the arithmetic window.
+	overread, markerErr := false, false
 	for tr := 0; tr < nTileRows; tr++ {
 		aboveRow.Reset()
 		tileRow4 := tileRowStart(tr)
@@ -329,15 +332,28 @@ func (d *Decoder) decodeOneFrame16(payload []byte) (*refbuf.Frame16, error) {
 			}
 		}
 		for tc := 0; tc < nTileCols; tc++ {
+			// Same verdict as libvpx's per-block sticky check (decode_block:
+			// xd->corrupted |= vpx_reader_has_error(r)): the condition is
+			// monotonic in the bits consumed, so once per tile suffices.
 			if brs[tc].Overread() {
 				overread = true
 			}
+			if brs[tc].MarkerError() {
+				markerErr = true
+			}
 		}
 	}
-	// An entropy desync (unsupported feature or corrupt data) drains the bool
-	// window past the tile bytes; the reconstruction is then garbage. Reject the
-	// frame so callers fall back (e.g. show a format icon) instead of rendering
-	// a partially-green picture.
+	// An entropy desync (decoder bug, unsupported feature or corrupt/truncated
+	// data) makes a tile consume more bits than it holds; the reconstruction is
+	// then garbage. Reject the frame under exactly libvpx's criterion (see
+	// boolcoder.Reader.Overread: the tile must end with at least 8 unconsumed
+	// bits) so callers fall back instead of rendering a corrupt picture. The
+	// limit is tight (in-sync libvpx tiles end 1..6 bits before it), so when
+	// this fires on a stream libvpx accepts, the cause is an earlier decode
+	// divergence in this decoder, not the check.
+	if markerErr {
+		return nil, errors.New("vp9/decoder: corrupt tile (bool-decoder marker bit set)")
+	}
 	if overread {
 		return nil, errors.New("vp9/decoder: entropy desync (bitstream over-read)")
 	}
@@ -353,8 +369,22 @@ func (d *Decoder) decodeOneFrame16(payload []byte) (*refbuf.Frame16, error) {
 		if !frameIsIntra && d.lastFrameKey {
 			coefUpdateFactor = 128
 		}
+		// The implied hp=1 bit of non-hp MVs is counted (libvpx vp9_inc_mv), but
+		// vp9_adapt_mv_probs adapts the hp probs only when the frame allows hp.
+		if !h.AllowHighPrecisionMV {
+			counts.MVClass0HPProbs = [2][2]uint32{}
+			counts.MVHPProbs = [2][2]uint32{}
+		}
 		adapted := preFc.Clone()
 		compheader.AdaptProbs(adapted, counts, !frameIsIntra, 24, coefUpdateFactor)
+		if frameIsIntra {
+			// Intra frames adapt only the coef probs; every other table keeps
+			// the forward-updated cm->fc values (tx/skip deltas from this
+			// frame's compressed header), not the pre-update context.
+			coef := adapted.CoefProbs
+			adapted = d.probs.Clone()
+			adapted.CoefProbs = coef
+		}
 		d.probs = adapted
 	}
 	// Save the resulting context if requested.

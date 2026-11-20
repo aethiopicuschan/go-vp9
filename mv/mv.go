@@ -192,7 +192,11 @@ func readComponent(br *boolcoder.Reader, p *compheader.Probs, counts *compheader
 				counts.MVClass0HPProbs[c][hp]++
 			}
 		} else {
+			// libvpx vp9_inc_mv counts the implied hp=1 bit too (usehp=1).
 			hp = 1
+			if counts != nil {
+				counts.MVClass0HPProbs[c][1]++
+			}
 		}
 	} else {
 		// CLASS_k (k≥1): read k integer bits; the class base contributes the high bit.
@@ -215,6 +219,9 @@ func readComponent(br *boolcoder.Reader, p *compheader.Probs, counts *compheader
 			}
 		} else {
 			hp = 1
+			if counts != nil {
+				counts.MVHPProbs[c][1]++
+			}
 		}
 	}
 
