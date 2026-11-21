@@ -1,0 +1,89 @@
+Corrupt-input regression data (decoder/robust_stream_test.go, decoder/robust_fuzz_test.go).
+
+== Streams ==
+
+All: ffmpeg + libvpx-vp9 encoder, lavfi source, 4:2:0, error_resilient=0.
+
+# robust_kf2_2tile.ivf  (11157 B, 512x64, 12 frames, 2 tile columns, key frames at packets 0 and 6, one frame per packet)
+ffmpeg -f lavfi -i testsrc2=size=512x64:rate=30 -frames:v 12 -c:v libvpx-vp9 -tile-columns 1 -frame-parallel 0 \
+       -auto-alt-ref 0 -lag-in-frames 0 -g 6 -keyint_min 6 -b:v 100k robust_kf2_2tile.ivf
+
+# robust_kf2_2tile_p2.ivf  (11067 B, same, profile 2 / 10 bit)
+ffmpeg -f lavfi -i testsrc2=size=512x64:rate=30 -frames:v 12 -c:v libvpx-vp9 -pix_fmt yuv420p10le -profile:v 2 \
+       -tile-columns 1 -frame-parallel 0 -auto-alt-ref 0 -lag-in-frames 0 -g 6 -keyint_min 6 -b:v 100k robust_kf2_2tile_p2.ivf
+
+# NAME.md5: one md5 per frame of the reference decode
+ffmpeg -c:v libvpx-vp9 -i NAME.ivf -f framemd5 - | grep -v '^#' | awk -F', *' '{print $6}' > NAME.md5
+
+The uncorrupted streams decode bit-exactly before and after the change (TestRobustStreams). What
+they are for is the table below: the second key frame is where a decoder that has been fed a
+corrupt packet has to be bit-exact again.
+
+== robust_corrupt.tsv ==
+
+2538 corruptions of single packets of five streams (the two above and the existing
+fp0_2tile_altref.ivf, fp0_2tile_altref_p2.ivf, fp0_4tile_flat_altref.ivf), each with what libvpx did
+with the corrupted packet and with the packets after it. Columns and edit syntax: see the top of
+robust_corrupt_gen.py.txt. Regenerate with
+
+  VICTIMS=0,1,3   VPXPK_RANGE=vpxpk_range python3 robust_corrupt_gen.py fp0_2tile_altref.ivf        scratch vpxpk
+  VICTIMS=0,1,2,9 VPXPK_RANGE=vpxpk_range python3 robust_corrupt_gen.py fp0_2tile_altref_p2.ivf     scratch vpxpk
+  VICTIMS=0,1,5   VPXPK_RANGE=vpxpk_range python3 robust_corrupt_gen.py fp0_4tile_flat_altref.ivf   scratch vpxpk
+  VICTIMS=0,2,5,6 VPXPK_RANGE=vpxpk_range python3 robust_corrupt_gen.py robust_kf2_2tile.ivf        scratch vpxpk full
+  VICTIMS=0,3,7   VPXPK_RANGE=vpxpk_range python3 robust_corrupt_gen.py robust_kf2_2tile_p2.ivf     scratch vpxpk full
+
+(outputs concatenated in that order under the two header lines). VICTIMS are the packets that get
+corrupted: key frames, plain inter frames, and packet 1 of the altref streams, a superframe holding
+a hidden alt-ref frame and a shown frame.
+
+vpxpk: robust_vpxpk.c.txt linked against libvpx 18656c2 built with
+  configure --disable-vp8 --disable-vp9-encoder --disable-unit-tests --disable-docs \
+            --enable-vp9-highbitdepth --disable-webm-io --disable-libyuv      (target generic-gnu: C only)
+  cc -O1 -o vpxpk vpxpk.c md5_utils.c -I<libvpx src> -I<build dir> <build dir>/libvpx.a -lm
+
+vpxpk_range: the same program linked against a copy of that libvpx with three additions that do not
+change its behaviour (its stdout is asserted to be identical to vpxpk's on every row):
+  - vpx_dsp/inv_txfm.h check_range():        if (input < INT16_MIN || input > INT16_MAX) flag
+  - vpx_dsp/inv_txfm.h highbd_check_range(): if input is outside the signed (8+bd)-bit range, flag
+    (the two conditions libvpx asserts on under --enable-coefficient-range-checking)
+  - vp9/decoder/vp9_detokenize.c decode_coefs(): if a dequantized coefficient v > (1 << (7 + bd)) - 1, flag
+  and in vp9_decode_frame, when the flag is set and getenv("VPXDBG"): fprintf(stderr, "CORRUPT range=...").
+It supplies the "range" column: R = the corrupted stream drives the inverse transform out of the
+range the format allows, so the picture is undefined.
+
+What the rows cover (label prefix: f = frame of a plain packet, sf = frame inside a superframe):
+  hdr_*            the bits of the first header byte: frame marker, profile (incl. profile 3 and its
+                   reserved bit), show_existing_frame, frame_type, show_frame, error_resilient
+  sync_*, color_*, width_*, height_*        key-frame header fields
+  reset_ctx_*, refresh_*, ref*_idx_*, ref*_sign, found_ref   inter-frame header fields
+  ctx_idx_*, base_q_*, seg_enabled, tile_cols, tile_rows     common header fields
+  comp_size_*, comp_marker, comp_zero, comp_ff*              compressed header size and contents
+  tileN_size_*, tileN_marker, tileN_zero_*, tileN_ff_*       tile size fields and tile contents
+  trunc_*          packet cut at every structural boundary and around it
+  flip             pseudo-random single-bit flips over the frame
+  packet/skip, packet/empty                 packet dropped / zero-length packet
+  trail/*          data appended behind a complete frame (zeros, garbage, a show-existing byte,
+                   a second copy of the frame)
+  index/*          superframe index stripped, damaged, sizes changed; an index added to a plain packet
+
+Results at 14ee559 (before) and with the change (after), TestRobustCorruptStreamsMatchLibvpx.
+Before = the test file and table dropped into a pristine checkout, one row per process
+(the old decoder does not terminate within 30 s on 5 rows):
+
+  stream                      rows   before: pass / FAIL    after: pass / FAIL
+  fp0_2tile_altref.ivf         504        429 /  75             504 / 0
+  fp0_2tile_altref_p2.ivf      625        545 /  80             625 / 0
+  fp0_4tile_flat_altref.ivf    459        436 /  23             459 / 0
+  robust_kf2_2tile.ivf         540        365 / 175             540 / 0
+  robust_kf2_2tile_p2.ivf      410        277 / 133             410 / 0
+
+  The 486 failures before: 245 corrupted packets decoded although libvpx rejects them; 210 packets
+  AFTER a rejected one decoded although libvpx rejects them (no resync state); 18 decoded to a
+  different picture (index stripped from a superframe, trailing show-existing frame, frame context
+  index on intra frames, inter block without coefficients); 8 packets rejected that libvpx decodes;
+  5 rows (found_ref bit flipped on an inter frame) did not finish within 30 s.
+  Exceptions the test makes, each stated in robust_stream_test.go:
+  - 11 rows marked R whose picture differs from libvpx's (robustUndefinedPixels): verdict only.
+  (The 10 rows that turn the key frame into a valid 511-wide / 287- or 63-high stream were verdict
+  only while frames reported even dimensions; since frames keep the true size their pictures are
+  compared like any other row. Rows with verdict "-" also require that no frame is returned.)

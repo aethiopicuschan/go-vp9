@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+"""Patch VP9 uncompressed headers of an IVF stream (profile 0 / 2, 4:2:0, one
+frame per packet, constant frame size) to reach header states the libvpx
+encoder never produces. The compressed header and tile data are left untouched,
+so the result is still a valid stream that libvpx decodes (to different pixels).
+
+usage: segment_hdrpatch.py IN.ivf OUT.ivf OP [OP...]
+  abs:F[,F...]          set segmentation_abs_or_delta_update=1 on frames F
+                        (each must code segmentation_update_data=1)
+  lfdelta:F:R0,R1,R2,R3:M0,M1
+                        on frame F force loop_filter_delta_update=1 and code
+                        the 4 ref deltas and the 2 mode deltas ('x' = no update)
+Frame numbers are 0-based packet indices.
+"""
+import struct
+import sys
+
+
+class Bits:
+    def __init__(self, data):
+        self.d = data
+        self.p = 0
+
+    def f(self, n):
+        v = 0
+        for _ in range(n):
+            v = (v << 1) | ((self.d[self.p >> 3] >> (7 - (self.p & 7))) & 1)
+            self.p += 1
+        return v
+
+
+def parse(data, state):
+    """Return a dict of bit positions for the uncompressed header of one frame."""
+    b = Bits(data)
+    pos = {}
+    assert b.f(2) == 2
+    profile = b.f(1) | (b.f(1) << 1)
+    assert profile in (0, 2)
+    assert b.f(1) == 0, "show_existing_frame not supported"
+    key = b.f(1) == 0
+    show = b.f(1)
+    er = b.f(1)
+
+    def color_config():
+        if profile >= 2:
+            b.f(1)
+        cs = b.f(3)
+        assert cs != 7
+        b.f(1)
+
+    def frame_size():
+        state["w"] = b.f(16) + 1
+        state["h"] = b.f(16) + 1
+
+    def render_size():
+        if b.f(1):
+            b.f(32)
+
+    if key:
+        assert b.f(24) == 0x498342
+        color_config()
+        frame_size()
+        render_size()
+    else:
+        intra_only = 0 if show else b.f(1)
+        if not er:
+            b.f(2)
+        if intra_only:
+            assert b.f(24) == 0x498342
+            if profile > 0:
+                color_config()
+            b.f(8)
+            frame_size()
+            render_size()
+        else:
+            b.f(8)
+            for _ in range(3):
+                b.f(4)
+            found = 0
+            for _ in range(3):
+                found = b.f(1)
+                if found:
+                    break
+            if not found:
+                frame_size()
+            render_size()
+            b.f(1)
+            if not b.f(1):
+                b.f(2)
+    if not er:
+        b.f(2)
+    b.f(2)
+    # loop filter
+    b.f(9)
+    pos["lf_delta_enabled"] = b.p
+    if b.f(1):
+        pos["lf_delta_update"] = b.p
+        if b.f(1):
+            for _ in range(6):
+                if b.f(1):
+                    b.f(7)
+        pos["lf_delta_end"] = b.p
+    # quant
+    b.f(8)
+    for _ in range(3):
+        if b.f(1):
+            b.f(5)
+    # segmentation
+    if b.f(1):
+        if b.f(1):
+            for _ in range(7):
+                if b.f(1):
+                    b.f(8)
+            temporal = b.f(1)
+            for _ in range(3):
+                if temporal and b.f(1):
+                    b.f(8)
+        if b.f(1):
+            pos["seg_abs"] = b.p
+            b.f(1)
+            for _ in range(8):
+                for bits, signed in ((8, 1), (6, 1), (2, 0), (0, 0)):
+                    if b.f(1):
+                        b.f(bits + signed)
+    # tile info
+    sb_cols = (state["w"] + 63) // 64
+    min_log2 = 0
+    while (64 << min_log2) < sb_cols:
+        min_log2 += 1
+    max_log2 = 1
+    while (sb_cols >> max_log2) >= 4:
+        max_log2 += 1
+    max_log2 -= 1
+    n = min_log2
+    while n < max_log2:
+        if not b.f(1):
+            break
+        n += 1
+    if b.f(1):
+        b.f(1)
+    b.f(16)
+    pos["end"] = b.p
+    return pos
+
+
+def getbits(data, start, end):
+    return [(data[i >> 3] >> (7 - (i & 7))) & 1 for i in range(start, end)]
+
+
+def su(v, n):
+    out = [(abs(v) >> (n - 1 - i)) & 1 for i in range(n)]
+    return out + [1 if v < 0 else 0]
+
+
+def main():
+    src, dst, ops = sys.argv[1], sys.argv[2], sys.argv[3:]
+    raw = open(src, "rb").read()
+    hdr, off, frames = raw[:32], 32, []
+    while off < len(raw):
+        size, = struct.unpack_from("<I", raw, off)
+        frames.append((raw[off + 4:off + 12], bytearray(raw[off + 12:off + 12 + size])))
+        off += 12 + size
+    state = {}
+    positions = []
+    for _, data in frames:
+        assert (data[-1] & 0xE0) != 0xC0, "superframes not supported"
+        positions.append(parse(data, state))
+    for op in ops:
+        parts = op.split(":")
+        if parts[0] == "abs":
+            for f in map(int, parts[1].split(",")):
+                p = positions[f]["seg_abs"]
+                frames[f][1][p >> 3] |= 0x80 >> (p & 7)
+        elif parts[0] == "lfdelta":
+            f = int(parts[1])
+            data, pos = frames[f][1], positions[f]
+            vals = parts[2].split(",") + parts[3].split(",")
+            assert len(vals) == 6
+            new = [1]
+            for v in vals:
+                new += [0] if v == "x" else [1] + su(int(v), 6)
+            bits = (getbits(data, 0, pos["lf_delta_update"]) + new +
+                    getbits(data, pos["lf_delta_end"], pos["end"]))
+            bits += [0] * (-len(bits) % 8)
+            head = bytearray()
+            for i in range(0, len(bits), 8):
+                v = 0
+                for x in bits[i:i + 8]:
+                    v = (v << 1) | x
+                head.append(v)
+            frames[f] = (frames[f][0], head + data[(pos["end"] + 7) >> 3:])
+            positions[f] = parse(frames[f][1], dict(state))
+        else:
+            raise SystemExit("unknown op " + op)
+    with open(dst, "wb") as o:
+        o.write(hdr)
+        for meta, data in frames:
+            o.write(struct.pack("<I", len(data)) + meta + data)
+
+
+main()

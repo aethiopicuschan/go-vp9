@@ -18,7 +18,6 @@ import (
 	"github.com/aethiopicuschan/go-vp9/partition"
 	"github.com/aethiopicuschan/go-vp9/reconstruct"
 	"github.com/aethiopicuschan/go-vp9/refbuf"
-	"github.com/aethiopicuschan/go-vp9/segment"
 	"github.com/aethiopicuschan/go-vp9/tile"
 	"github.com/aethiopicuschan/go-vp9/transform"
 )
@@ -28,31 +27,40 @@ import (
 // the verified _16 pixel pipeline. The entropy decode (header, probs, block mode,
 // MVs) is shared with the 8-bit path; only the pixel target differs.
 
-// DecodeFrame16 decodes a VP9 profile 2/3 (10/12-bit) packet, returning the shown
-// 16-bit frame. Mirrors DecodeFrame (superframe split + show selection).
+// DecodeFrame16 decodes a VP9 profile 2/3 (10/12-bit) packet, returning the
+// frame it outputs with 16-bit samples. It mirrors DecodeFrame, including the
+// (nil, nil) result for a packet that shows no frame.
 func (d *Decoder) DecodeFrame16(payload []byte) (*refbuf.Frame16, error) {
-	var shown, last *refbuf.Frame16
-	for _, sub := range splitSuperframe(payload) {
-		f, err := d.decodeOneFrame16(sub)
+	decodeMu.Lock()
+	defer decodeMu.Unlock()
+	var shown *refbuf.Frame16
+	// Packet structure (superframe index, trailing data) and the error state
+	// follow libvpx: see decodePacket.
+	err := d.decodePacket(payload, func(sub []byte) (int, error) {
+		f, end, err := d.decodeOneFrame16(sub)
 		if err != nil {
-			return nil, err
+			return 0, err
 		}
-		last = f
+		// libvpx outputs at most one frame per packet, and only if the frame
+		// decoded last is a shown one (vp9_get_raw_frame: cm->show_frame).
+		shown = nil
 		if d.lastShown {
 			shown = f
 		}
-	}
-	if shown != nil {
-		return shown, nil
-	}
-	return last, nil
-}
-
-func (d *Decoder) decodeOneFrame16(payload []byte) (*refbuf.Frame16, error) {
-	// 1. Uncompressed header.
-	h, err := frame.Parse(payload, d.frameWidth, d.frameHeight)
+		return end, nil
+	})
 	if err != nil {
 		return nil, err
+	}
+	return shown, nil
+}
+
+func (d *Decoder) decodeOneFrame16(payload []byte) (*refbuf.Frame16, int, error) {
+	// 1. Uncompressed header.
+	h, err := frame.ParseRefs(payload, d.refSize16)
+	if err != nil {
+		d.rejectedHeader(h, d.refSlots16())
+		return nil, 0, err
 	}
 	if p := os.Getenv("BLK_DUMP_GO"); p != "" && blkDumpW == nil {
 		if fpd, e := os.Create(p); e == nil {
@@ -73,25 +81,33 @@ func (d *Decoder) decodeOneFrame16(payload []byte) (*refbuf.Frame16, error) {
 	if h.ShowExistingFrame {
 		f := d.refBuf16.Get(h.ShowExistingIdx)
 		if f == nil {
-			return nil, errors.New("vp9/decoder: show_existing_frame references empty slot")
+			return nil, 0, errors.New("vp9/decoder: show_existing_frame references empty slot")
 		}
-		d.lastShown = true
-		return f, nil
+		// While the decoder waits for a key or intra-only frame after an
+		// error, libvpx decodes a show_existing_frame without error but
+		// outputs nothing (decoder_get_frame: ctx->need_resync).
+		d.lastShown = !d.needResync
+		return f, h.Size, nil
 	}
 	// BitDepth is only read for key frames and intra-only inter frames.
 	// Normal inter frames inherit bit depth from the sequence; accept 0 (not read).
 	// (bit depth 10/12 handled by this path)
 
-	// 2. Compressed header (prob updates).
-	// When CompressedHeaderSize exceeds the remaining payload the encoder is
-	// signalling a "copy-from-reference" frame: all bool-coded reads past end
-	// of data return 0 (no prob updates, no residual), so we clamp the slice.
-	compEnd := h.Size + h.CompressedHeaderSize
-	if compEnd > len(payload) {
-		compEnd = len(payload)
+	// Header checks that depend on the decoder state (resync after an error,
+	// reference slots, header length): see beginFrame.
+	if err := d.beginFrame(h, len(payload), d.refSlots16()); err != nil {
+		return nil, 0, err
 	}
-	compData := payload[h.Size:compEnd]
+
+	// 2. Compressed header (prob updates). beginFrame made sure it lies inside
+	// the packet. libvpx read_compressed_header fails the frame when the bool
+	// decoder's marker bit is set ("Failed to allocate bool decoder 0") and,
+	// below, when the header over-reads its partition.
+	compData := payload[h.Size : h.Size+h.CompressedHeaderSize]
 	compBR := boolcoder.NewReaderVP9(compData)
+	if compBR.MarkerError() {
+		return nil, 0, errCompHdrMarker
+	}
 	isIntra := h.FrameType == frame.FrameKey
 	frameIsIntra := isIntra || h.IntraOnly
 
@@ -100,16 +116,21 @@ func (d *Decoder) decodeOneFrame16(payload []byte) (*refbuf.Frame16, error) {
 	// contexts; the working fc is loaded from frame_contexts[idx], gets the
 	// compressed-header forward updates, and is later backward-adapted from the
 	// pre-update context using this frame's symbol counts.
-	if frameIsIntra || h.ErrorResilient {
-		if isIntra || h.ErrorResilient || h.ResetFrameContext == 3 {
-			for i := range d.frameContexts {
-				d.frameContexts[i] = compheader.DefaultProbs()
-			}
-		} else if h.ResetFrameContext == 2 {
-			d.frameContexts[h.FrameContextIdx] = compheader.DefaultProbs()
-		}
+	// Those frames always work with context 0 (frameContextIndex).
+	ctxIdx, err := d.frameContextIndex(h)
+	if err != nil {
+		return nil, 0, err
 	}
-	preFc := d.frameContexts[h.FrameContextIdx]
+	if frameIsIntra || h.ErrorResilient {
+		// vp9_setup_past_independence forces frame_context_idx to 0 (done by
+		// frameContextIndex: the coded index only selects the context that
+		// reset_frame_context=2 resets) and zeroes ref_frame_sign_bias — after
+		// the header's sign-bias bits were read, so an error-resilient inter
+		// frame never has compound references.
+		h.FrameContextIdx = ctxIdx
+		h.RefFrameSign = [3]bool{}
+	}
+	preFc := d.frameContexts[ctxIdx]
 	d.probs = preFc.Clone() // working fc (forward-updated below; used by buildFrameInfo)
 	// Compound prediction is allowed only when some reference frame has a
 	// different sign bias (libvpx vp9_compound_reference_allowed); otherwise the
@@ -123,9 +144,16 @@ func (d *Decoder) decodeOneFrame16(payload []byte) (*refbuf.Frame16, error) {
 	d.usePrevFrameMVs = !h.ErrorResilient && d.prevFrameMI != nil &&
 		h.FrameWidth == d.prevFrameWidth && h.FrameHeight == d.prevFrameHeight &&
 		!d.prevFrameIntraOnly && d.prevFrameShow && !d.lastFrameKey
-	if err := compheader.Decode(compBR, frameIsIntra,
-		h.InterpolationFilter, h.AllowHighPrecisionMV, compoundAllowed, d.probs); err != nil {
-		return nil, err
+	// A lossless frame has no tx_mode in its compressed header (ONLY_4X4).
+	hdrLossless := h.BaseQIdx == 0 && h.DeltaQYDC == 0 && h.DeltaQUVDC == 0 && h.DeltaQUVAC == 0
+	if err := compheader.DecodeLossless(compBR, frameIsIntra,
+		h.InterpolationFilter, h.AllowHighPrecisionMV, compoundAllowed, hdrLossless, d.probs); err != nil {
+		return nil, 0, err
+	}
+	// libvpx read_compressed_header returns vpx_reader_has_error: "Decode
+	// failed. Frame data header is corrupted."
+	if compBR.Overread() {
+		return nil, 0, errCompHdrOverread
 	}
 
 	if blkFrame == 1 {
@@ -161,7 +189,18 @@ func (d *Decoder) decodeOneFrame16(payload []byte) (*refbuf.Frame16, error) {
 		bd = d.bitDepth
 	}
 	d.bitDepth = bd
-	dst := refbuf.NewFrame16(fw, fh, bd)
+	// Chroma format: signalled by key and intra-only frames, inherited by
+	// inter frames.
+	if frameIsIntra {
+		d.ssX, d.ssY = 0, 0
+		if h.SubsamplingX {
+			d.ssX = 1
+		}
+		if h.SubsamplingY {
+			d.ssY = 1
+		}
+	}
+	dst := refbuf.NewFrame16SS(fw, fh, bd, d.ssX, d.ssY)
 	mx := (1 << uint(bd)) - 1
 	intra16.MaxVal = mx
 	intra16.Base = 1 << uint(bd-1)
@@ -170,23 +209,26 @@ func (d *Decoder) decodeOneFrame16(payload []byte) (*refbuf.Frame16, error) {
 	transform.BD16 = bd
 	coeftoken.BD = bd
 	loopfilter.SetBitDepth16(bd)
-	w4 := (fw + 3) / 4
-	h4 := (fh + 3) / 4
+	// The MI grid is libvpx's: whole 8×8 units (mi_cols = ceil(width/8)), here
+	// counted in 4×4 units. A frame whose size is not a multiple of 8 still
+	// codes, reconstructs and loop-filters the full last 8×8 column/row.
+	w4 := (fw + 7) / 8 * 2
+	h4 := (fh + 7) / 8 * 2
 
-	// Resize MI grid if needed.
-	if d.miW4 != w4 || d.miH4 != h4 {
-		d.miW4 = w4
-		d.miH4 = h4
-		// Transform blocks whose top-left lies outside the MI grid (right/bottom
-		// frame edge) are not coded; reconstruct skips them (libvpx max_blocks_*).
-		reconstruct.MiW4 = w4
-		reconstruct.MiH4 = h4
-		d.miGrid = make([]miBlock, w4*h4)
-	} else {
-		for i := range d.miGrid {
-			d.miGrid[i] = miBlock{}
-		}
-	}
+	// Transform blocks whose top-left lies outside the MI grid (right/bottom
+	// frame edge) are not coded; reconstruct skips them (libvpx max_blocks_*).
+	// This is package state of reconstruct, so it is set for every frame, not
+	// only when this decoder's grid changes: another Decoder may have decoded
+	// a frame of a different size in between.
+	reconstruct.MiW4 = w4
+	reconstruct.MiH4 = h4
+
+	// A fresh (zeroed) MI grid for every frame: the finished grid is handed
+	// over, not copied, as the temporal-MV source of the next frame and of
+	// the refreshed reference slots, so it must not be written again.
+	d.miW4 = w4
+	d.miH4 = h4
+	d.miGrid = make([]miBlock, w4*h4)
 
 	// Map this frame's LAST/GOLDEN/ALTREF to ref slots BEFORE gathering them:
 	// ref_frame_idx is per-frame and may differ from the previous frame's, so
@@ -206,8 +248,12 @@ func (d *Decoder) decodeOneFrame16(payload []byte) (*refbuf.Frame16, error) {
 		d.refBuf16.AltRef(),
 	}
 
+	d.invalidBlock = false
+
 	// 4. Build FrameInfo for blockmode.
 	fi := d.buildFrameInfo(h)
+	d.segBeginFrame(h, &fi, fw, fh)
+	d.segInvalid = false
 
 	// Store per-frame quantizer params for per-block segment Q recompute.
 	d.baseQIdx = h.BaseQIdx
@@ -249,7 +295,7 @@ func (d *Decoder) decodeOneFrame16(payload []byte) (*refbuf.Frame16, error) {
 	tileReader, err := tile.NewReader(payload, h.Size, h.CompressedHeaderSize,
 		h.TileColsLog2, h.TileRowsLog2)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	nTileCols := tileReader.NumCols()
@@ -283,7 +329,9 @@ func (d *Decoder) decodeOneFrame16(payload []byte) (*refbuf.Frame16, error) {
 		return h4
 	}
 
-	// One full-width above-row context, reset at the start of each tile row.
+	// One full-width above-row context, reset once per frame and carried across
+	// tile rows (libvpx decode_tiles zeroes above_context / above_seg_context
+	// before the tile-row loop only; tile rows are not independent).
 	// Tile columns write disjoint column ranges, so a single shared array
 	// (indexed by absolute col4) is correct.
 	aboveRow := ctx.NewRow(w4 * 4)
@@ -297,8 +345,12 @@ func (d *Decoder) decodeOneFrame16(payload []byte) (*refbuf.Frame16, error) {
 	// markerErr = vpx_reader_init saw a 1 marker bit; overread =
 	// vpx_reader_has_error, i.e. zero-fill reached the arithmetic window.
 	overread, markerErr := false, false
+	aboveRow.Reset()
+	d.invalidMV = false
+	// End of the frame's data as libvpx reports it to its packet loop:
+	// vpx_reader_find_end of the last tile (decode_tiles).
+	frameEnd := len(payload)
 	for tr := 0; tr < nTileRows; tr++ {
-		aboveRow.Reset()
 		tileRow4 := tileRowStart(tr)
 		tileBot4 := tileRowStart(tr + 1)
 
@@ -316,12 +368,14 @@ func (d *Decoder) decodeOneFrame16(payload []byte) (*refbuf.Frame16, error) {
 			for tc := 0; tc < nTileCols; tc++ {
 				colStart := tileColStart(tc)
 				colEnd := tileColStart(tc + 1)
-				// Tile-relative neighbour availability (entropy + intra prediction
-				// + MV-reference search).
+				// Neighbour availability (entropy + intra prediction + MV-reference
+				// search): left is tile-relative, above is frame-relative (libvpx
+				// set_mi_row_col: above_mi = mi_row != 0, left_mi = mi_col >
+				// tile->mi_col_start), so a tile row sees the tile row above it.
 				fi.MiColStart = colStart
-				fi.MiRowStart = tileRow4
+				fi.MiRowStart = 0
 				reconstruct.TileColStart4 = colStart
-				reconstruct.TileRowStart4 = tileRow4
+				reconstruct.TileRowStart4 = 0
 				d.curTileColStart4 = colStart
 				d.curTileColEnd4 = colEnd
 				for sbCol4 := colStart; sbCol4 < colEnd; sbCol4 += sbN4 {
@@ -342,6 +396,9 @@ func (d *Decoder) decodeOneFrame16(payload []byte) (*refbuf.Frame16, error) {
 				markerErr = true
 			}
 		}
+		if tr == nTileRows-1 {
+			frameEnd = tileReader.LastTileOffset() + brs[nTileCols-1].FindEnd()
+		}
 	}
 	// An entropy desync (decoder bug, unsupported feature or corrupt/truncated
 	// data) makes a tile consume more bits than it holds; the reconstruction is
@@ -351,11 +408,22 @@ func (d *Decoder) decodeOneFrame16(payload []byte) (*refbuf.Frame16, error) {
 	// limit is tight (in-sync libvpx tiles end 1..6 bits before it), so when
 	// this fires on a stream libvpx accepts, the cause is an earlier decode
 	// divergence in this decoder, not the check.
+	if d.invalidBlock {
+		return nil, 0, errors.New("vp9/decoder: invalid block size for chroma subsampling")
+	}
 	if markerErr {
-		return nil, errors.New("vp9/decoder: corrupt tile (bool-decoder marker bit set)")
+		return nil, 0, errors.New("vp9/decoder: corrupt tile (bool-decoder marker bit set)")
 	}
 	if overread {
-		return nil, errors.New("vp9/decoder: entropy desync (bitstream over-read)")
+		return nil, 0, errors.New("vp9/decoder: entropy desync (bitstream over-read)")
+	}
+	// libvpx's third source of xd->corrupted: a NEWMV vector out of range.
+	if d.invalidMV {
+		return nil, 0, errInvalidMV
+	}
+	if d.segInvalid {
+		// libvpx: "Invalid usage of segment feature on small blocks".
+		return nil, 0, errors.New("vp9/decoder: segment skip feature on a sub-8x8 inter block")
 	}
 
 	// 6a. Backward-adapt the saved frame context from the PRE-update context
@@ -389,17 +457,15 @@ func (d *Decoder) decodeOneFrame16(payload []byte) (*refbuf.Frame16, error) {
 	}
 	// Save the resulting context if requested.
 	if h.RefreshFrameContext {
-		d.frameContexts[h.FrameContextIdx] = d.probs
+		d.frameContexts[ctxIdx] = d.probs
 	}
 	// Track this frame's type for the next frame's coef-adaptation speed.
 	d.lastFrameKey = isIntra
 
 	// Save this (decode-order) frame's MI grid + metadata as the temporal-MV
 	// source for the next frame (libvpx cm->prev_frame).
-	if d.prevFrameMI == nil || len(d.prevFrameMI) != len(d.miGrid) {
-		d.prevFrameMI = make([]miBlock, len(d.miGrid))
-	}
-	copy(d.prevFrameMI, d.miGrid)
+	// The grid is shared read-only from here on (see its allocation).
+	d.prevFrameMI = d.miGrid
 	d.prevFrameW4 = d.miW4
 	d.prevFrameWidth = h.FrameWidth
 	d.prevFrameHeight = h.FrameHeight
@@ -409,9 +475,7 @@ func (d *Decoder) decodeOneFrame16(payload []byte) (*refbuf.Frame16, error) {
 	// 6b. Save MI grid to refreshed slots for temporal MV prediction.
 	for i := 0; i < 8; i++ {
 		if h.RefreshFrameFlags&(1<<uint(i)) != 0 {
-			grid := make([]miBlock, len(d.miGrid))
-			copy(grid, d.miGrid)
-			d.prevMIGrids[i] = grid
+			d.prevMIGrids[i] = d.miGrid
 			d.prevMIW4[i] = d.miW4
 			d.prevMIH4[i] = d.miH4
 		}
@@ -449,8 +513,10 @@ func (d *Decoder) decodeOneFrame16(payload []byte) (*refbuf.Frame16, error) {
 			cell := &miGrid[cr*miW4+cc]
 			return cell.lfLevel, cell.uvTxSize, cell.skipLF, r4 == cell.bRow4/2, c4 == cell.bCol4/2
 		}
-		yW4, yH4 := dst.Width/4, dst.Height/4
-		uvW4, uvH4 := (dst.Width/2)/4, (dst.Height/2)/4
+		// libvpx filters the whole MI grid (mi_rows × mi_cols 8×8 units), not
+		// just the visible picture; a chroma 4×4 column/row per MI (4:2:0).
+		yW4, yH4 := miW4, miH4
+		uvW4, uvH4 := miW4/2, miH4/2
 		if p := os.Getenv("LF_EDGEDUMP_GO"); p != "" {
 			if fpd, err := os.Create(p); err == nil {
 				loopfilter.DumpW = fpd
@@ -459,10 +525,38 @@ func (d *Decoder) decodeOneFrame16(payload []byte) (*refbuf.Frame16, error) {
 		}
 		loopfilter.DumpPlane = 0
 		loopfilter.FilterFrame16(dst.Y[dst.YBase():], dst.YStride, yW4, yH4, 16, sharpness, yInfo)
-		loopfilter.DumpPlane = 1
-		loopfilter.FilterFrame16(dst.U[dst.UBase():], dst.UVStride, uvW4, uvH4, 8, sharpness, uvInfo)
-		loopfilter.DumpPlane = 2
-		loopfilter.FilterFrame16(dst.V[dst.VBase():], dst.UVStride, uvW4, uvH4, 8, sharpness, uvInfo)
+		switch {
+		case dst.SubX == 1 && dst.SubY == 1:
+			loopfilter.DumpPlane = 1
+			loopfilter.FilterFrame16(dst.U[dst.UBase():], dst.UVStride, uvW4, uvH4, 8, sharpness, uvInfo)
+			loopfilter.DumpPlane = 2
+			loopfilter.FilterFrame16(dst.V[dst.VBase():], dst.UVStride, uvW4, uvH4, 8, sharpness, uvInfo)
+		case dst.SubX == 0 && dst.SubY == 0:
+			// 4:4:4: libvpx filters the chroma planes with the luma masks and
+			// levels (vp9_filter_block_plane_ss00 for every plane).
+			loopfilter.DumpPlane = 1
+			loopfilter.FilterFrame16(dst.U[dst.UBase():], dst.UVStride, yW4, yH4, 16, sharpness, yInfo)
+			loopfilter.DumpPlane = 2
+			loopfilter.FilterFrame16(dst.V[dst.VBase():], dst.UVStride, yW4, yH4, 16, sharpness, yInfo)
+		default:
+			// 4:2:2 / 4:4:0: libvpx's generic vp9_filter_block_plane_non420,
+			// driven per 8×8 mode-info cell.
+			miInfo := func(miRow, miCol int) (int, uint8, bool, bool, bool) {
+				r4, c4 := miRow*2, miCol*2
+				if r4 >= miH4 || c4 >= miW4 {
+					return 0, 0, false, false, false
+				}
+				cell := &miGrid[r4*miW4+c4]
+				return cell.lfLevel, cell.uvTxSize, cell.skipLF, c4 == cell.bCol4, r4 == cell.bRow4
+			}
+			miRows, miCols := (miH4+1)/2, (miW4+1)/2
+			for _, buf := range [][]uint16{dst.U[dst.UBase():], dst.V[dst.VBase():]} {
+				loopfilter.FilterFrameNon420(dst.UVStride, miRows, miCols, dst.SubX, dst.SubY, sharpness, miInfo,
+					func(q0, step, width int, p loopfilter.Params) {
+						loopfilter.FilterEdge4_16(buf, q0, step, width, p)
+					})
+			}
+		}
 		loopfilter.DumpW = nil
 	}
 
@@ -470,9 +564,16 @@ func (d *Decoder) decodeOneFrame16(payload []byte) (*refbuf.Frame16, error) {
 	// at the start of its own decode from its ref_frame_idx, above.)
 	refbuf.ExtendBorders16(dst)
 	d.refBuf16.Update(dst, h.RefreshFrameFlags)
+	for i := 0; i < 8; i++ {
+		if h.RefreshFrameFlags&(1<<uint(i)) != 0 {
+			d.slotW[i], d.slotH[i] = fw, fh
+		}
+	}
+
+	d.segEndFrame(h)
 
 	d.lastShown = h.ShowFrame
-	return dst, nil
+	return dst, frameEnd, nil
 }
 
 func (d *Decoder) decodePartition16(br *boolcoder.Reader, probs *compheader.Probs, counts *compheader.Counts,
@@ -481,7 +582,7 @@ func (d *Decoder) decodePartition16(br *boolcoder.Reader, probs *compheader.Prob
 	row4, col4, bsLog2 int,
 	defaultDC, defaultAC [3]int16, lossless bool,
 ) {
-	if row4*4 >= dst.Height || col4*4 >= dst.Width {
+	if row4 >= d.miH4 || col4 >= d.miW4 || d.invalidBlock {
 		return
 	}
 
@@ -558,6 +659,12 @@ func (d *Decoder) decodeCodingBlock16(br *boolcoder.Reader, probs *compheader.Pr
 	row4, col4, bsW4, bsH4, sub8x8 int,
 	defaultDC, defaultAC [3]int16, lossless bool,
 ) {
+	// libvpx decode_block: a block whose chroma size is not a valid block size
+	// (4:2:2 / 4:4:0 only) makes the frame corrupt.
+	if d.invalidBlock || invalidUVBlock(bsW4, bsH4, d.ssX, d.ssY) {
+		d.invalidBlock = true
+		return
+	}
 	if blkDumpW != nil {
 		rng, top := br.State()
 		fmt.Fprintf(blkDumpW, "%d %d %d %d %d %d t=%d bp=%d\n", blkFrame, row4/2, col4/2, bsW4, bsH4, rng, top, br.BitPos())
@@ -565,6 +672,9 @@ func (d *Decoder) decodeCodingBlock16(br *boolcoder.Reader, probs *compheader.Pr
 
 	// Decode mode info.
 	bm := blockmode.Decode(br, probs, counts, fi, aboveRow, leftCol, col4, row4, bsW4, bsH4, sub8x8, d.mvRefs, d.appendSub8x8)
+	if bm.InvalidMV {
+		d.invalidMV = true
+	}
 
 	if blkDumpW != nil {
 		rng, _ := br.State()
@@ -573,28 +683,20 @@ func (d *Decoder) decodeCodingBlock16(br *boolcoder.Reader, probs *compheader.Pr
 			bm.MV[0].Row, bm.MV[0].Col, bm.Skip, bm.TxSize, bm.InterpFilter, rng)
 	}
 
+	if bm.Invalid {
+		d.segInvalid = true
+	}
+
 	// Per-segment quantizer + LF level.
 	dc, ac := defaultDC, defaultAC
-	var segP segment.Params
-	if fi.SegEnabled {
-		segP = segment.ParamsFor(fi.SegFeatEnabled, fi.SegFeatData, fi.SegAbsOrDelta, bm.SegID)
-		qIdx := segment.ClampQIndex(d.baseQIdx, segP)
-		if qIdx != d.baseQIdx {
-			dc[0], ac[0] = qStepsForPlaneBD(qIdx, d.deltaQYDC, 0, d.bitDepth)
-			dc[1], ac[1] = qStepsForPlaneBD(qIdx, d.deltaQUVDC, d.deltaQUVAC, d.bitDepth)
-			dc[2], ac[2] = dc[1], ac[1]
-		}
+	if qIdx := d.segQIndex(&fi, bm.SegID); qIdx != d.baseQIdx {
+		dc[0], ac[0] = qStepsForPlaneBD(qIdx, d.deltaQYDC, 0, d.bitDepth)
+		dc[1], ac[1] = qStepsForPlaneBD(qIdx, d.deltaQUVDC, d.deltaQUVAC, d.bitDepth)
+		dc[2], ac[2] = dc[1], ac[1]
 	}
 
 	// Per-block loop filter level (spec §8.8.1).
-	segLFActive := fi.SegEnabled && fi.SegFeatEnabled[bm.SegID][segment.FeatAltLF]
-	lfLevel := loopfilter.LevelForBlock(
-		d.lfBaseLevel,
-		segLFActive, int16(segP.LFDelta),
-		d.lfDeltaEnabled,
-		bm.RefFrame[0], bm.IsInter, bm.MV[0].Row == 0 && bm.MV[0].Col == 0,
-		d.lfRefDeltas, d.lfModeDeltas,
-	)
+	lfLevel := d.blockLFLevel(&fi, &bm)
 
 	// Motion vectors are resolved in blockmode.Decode (NEAREST/NEAR/ZERO/NEW
 	// from the find_mv_refs candidate list); use them directly.
@@ -605,8 +707,17 @@ func (d *Decoder) decodeCodingBlock16(br *boolcoder.Reader, probs *compheader.Pr
 		rrng, rtop := br.State()
 		fmt.Fprintf(blkDumpW, "RES go residual-start bp=%d rng=%d t=%d skip=%v tx=%d isInter=%v\n", br.BitPos(), rrng, rtop, bm.Skip, bm.TxSize, bm.IsInter)
 	}
-	reconstruct.Block16(br, probs, counts, bm, lossless, mv0, mv1, dc, ac,
+	eobTotal := reconstruct.Block16(br, probs, counts, bm, lossless, mv0, mv1, dc, ac,
 		dst, refs, aboveRow, leftCol, row4, col4, bsW4, bsH4)
+	// libvpx decode_block: "if (!less8x8 && eobtotal == 0) mi->skip = 1; // skip
+	// loopfilter". An inter block of 8x8 or more that was coded as not skipped
+	// but carries no coefficient at all counts as skipped from here on: for the
+	// loop filter and, because the flag lives in the mode info, for the skip
+	// and tx-size contexts of the blocks decoded after it. (A libvpx encoder
+	// never codes such a block; other encoders and corrupt streams do.)
+	if bm.IsInter && !bm.Skip && sub8x8 == blockmode.Sub8x8None && eobTotal == 0 {
+		bm.Skip = true
+	}
 	if blkDumpW != nil && row4 == 4 && col4 == 12 {
 		fmt.Fprintf(blkDumpW, "RES go residual-end bp=%d\n", br.BitPos())
 	}
@@ -685,3 +796,28 @@ func qStepsForPlaneBD(qIdx, dcDelta, acDelta, bd int) (dc, ac int16) {
 	return dequant.DCQuantBD(clamp(qIdx+dcDelta), bd), dequant.ACQuantBD(clamp(qIdx+acDelta), bd)
 }
 
+
+// refSize16 returns the coded size of the frame in reference slot 0..7 of the
+// 16-bit reference buffer, or 0, 0 when the slot is empty.
+func (d *Decoder) refSize16(slot int) (w, h int) {
+	if d.refBuf16.Get(slot) == nil {
+		return 0, 0
+	}
+	return d.slotW[slot&7], d.slotH[slot&7]
+}
+
+// refSlots16 describes the 16-bit reference slots to beginFrame.
+func (d *Decoder) refSlots16() refSlots {
+	return refSlots{
+		size:  d.refSize16,
+		clear: func() { d.refBuf16 = refbuf.Buffer16{} },
+		format: func(slot int) (int, int, int) {
+			f := d.refBuf16.Get(slot)
+			if f == nil {
+				return -1, -1, 0
+			}
+			return f.SubX, f.SubY, f.BitDepth
+		},
+		depth: d.bitDepth,
+	}
+}

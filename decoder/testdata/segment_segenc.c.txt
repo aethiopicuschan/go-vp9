@@ -1,0 +1,185 @@
+// segenc: tiny libvpx VP9 encoder driver that exercises segmentation features
+// the stock ffmpeg/vpxenc command lines cannot reach: the ROI map
+// (VP9E_SET_ROI_MAP: per-segment ALT_Q, ALT_LF, SKIP and REF_FRAME features)
+// and the active map (VP8E_SET_ACTIVEMAP: SKIP + ALT_LF=-63 on segment 7).
+//
+// build: cp segment_segenc.c.txt segenc.c &&
+//        cc -O1 -o segenc segenc.c $(pkg-config --cflags --libs vpx)
+// usage: segenc W H FRAMES BITS KBPS FP in.yuv out.ivf roi DQ DLF SKIP REF MOVE [OFF0 OFF1]
+//        segenc W H FRAMES BITS KBPS FP in.yuv out.ivf active MOVE
+//   BITS   8 (profile 0, input yuv420p) or 10 (profile 2, input yuv420p10le)
+//   FP     frame-parallel decoding mode (0/1)
+//   DQ, DLF, SKIP, REF   8 comma-separated ints, one per segment (REF: -1 none,
+//          0 intra, 1 last, 2 golden)
+//   MOVE   the map pattern is shifted by MOVE*frame 8x8 columns each frame
+//   OFF0 OFF1  frames OFF0 <= f < OFF1 are coded with the ROI map removed
+//          (segmentation disabled), the map keeps moving meanwhile
+// ROI map: 4x2 grid of segments 0..7 over the frame (8x8 units).
+// Active map: an inactive rectangle in the middle of the frame (16x16 units).
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <vpx/vp8cx.h>
+#include <vpx/vpx_encoder.h>
+
+static void die(const char *m) {
+  fprintf(stderr, "segenc: %s\n", m);
+  exit(1);
+}
+static void le16(FILE *f, unsigned v) {
+  fputc(v & 255, f);
+  fputc((v >> 8) & 255, f);
+}
+static void le32(FILE *f, unsigned v) {
+  le16(f, v & 0xffff);
+  le16(f, v >> 16);
+}
+static void parse8(const char *s, int out[8]) {
+  if (sscanf(s, "%d,%d,%d,%d,%d,%d,%d,%d", &out[0], &out[1], &out[2], &out[3],
+             &out[4], &out[5], &out[6], &out[7]) != 8)
+    die("need 8 comma-separated ints");
+}
+static int drain(vpx_codec_ctx_t *c, FILE *out) {
+  vpx_codec_iter_t it = NULL;
+  const vpx_codec_cx_pkt_t *p;
+  int n = 0;
+  while ((p = vpx_codec_get_cx_data(c, &it)) != NULL) {
+    if (p->kind != VPX_CODEC_CX_FRAME_PKT) continue;
+    le32(out, (unsigned)p->data.frame.sz);
+    le32(out, (unsigned)p->data.frame.pts);
+    le32(out, 0);
+    fwrite(p->data.frame.buf, 1, p->data.frame.sz, out);
+    n++;
+  }
+  return n;
+}
+
+int main(int argc, char **argv) {
+  if (argc < 11) die("bad usage");
+  int w = atoi(argv[1]), h = atoi(argv[2]), frames = atoi(argv[3]);
+  int bits = atoi(argv[4]), kbps = atoi(argv[5]), fp = atoi(argv[6]);
+  FILE *in = fopen(argv[7], "rb"), *out = fopen(argv[8], "wb");
+  const char *mode = argv[9];
+  int is_roi = !strcmp(mode, "roi");
+  int dq[8], dlf[8], skip[8], ref[8], move, off0 = -1, off1 = -1;
+  if (!in || !out) die("open");
+  if (is_roi) {
+    if (argc != 15 && argc != 17) die("roi needs DQ DLF SKIP REF MOVE");
+    parse8(argv[10], dq);
+    parse8(argv[11], dlf);
+    parse8(argv[12], skip);
+    parse8(argv[13], ref);
+    move = atoi(argv[14]);
+    if (argc == 17) {
+      off0 = atoi(argv[15]);
+      off1 = atoi(argv[16]);
+    }
+  } else {
+    move = atoi(argv[10]);
+  }
+
+  vpx_codec_enc_cfg_t cfg;
+  vpx_codec_ctx_t c;
+  if (vpx_codec_enc_config_default(vpx_codec_vp9_cx(), &cfg, 0)) die("cfg");
+  cfg.g_w = w;
+  cfg.g_h = h;
+  cfg.g_timebase.num = 1;
+  cfg.g_timebase.den = 30;
+  cfg.g_threads = 1;
+  cfg.g_lag_in_frames = 0;
+  cfg.g_error_resilient = 0;
+  cfg.rc_end_usage = VPX_CBR;
+  cfg.rc_target_bitrate = kbps;
+  cfg.kf_mode = VPX_KF_AUTO;
+  cfg.kf_max_dist = 9999;
+  cfg.rc_min_quantizer = 8;
+  cfg.rc_max_quantizer = 56;
+  if (bits > 8) {
+    cfg.g_profile = 2;
+    cfg.g_bit_depth = VPX_BITS_10;
+    cfg.g_input_bit_depth = 10;
+  }
+  if (vpx_codec_enc_init(&c, vpx_codec_vp9_cx(), &cfg,
+                         bits > 8 ? VPX_CODEC_USE_HIGHBITDEPTH : 0))
+    die("init");
+  vpx_codec_control(&c, VP8E_SET_CPUUSED, 6);
+  vpx_codec_control(&c, VP9E_SET_AQ_MODE, 0);
+  vpx_codec_control(&c, VP9E_SET_FRAME_PARALLEL_DECODING, fp);
+  vpx_codec_control(&c, VP9E_SET_TILE_COLUMNS, 0);
+
+  vpx_image_t img;
+  if (!vpx_img_alloc(&img, bits > 8 ? VPX_IMG_FMT_I42016 : VPX_IMG_FMT_I420, w,
+                     h, 1))
+    die("img");
+  int bps = bits > 8 ? 2 : 1;
+  int mi_cols = (w + 7) / 8, mi_rows = (h + 7) / 8;
+  int mb_cols = (w + 15) / 16, mb_rows = (h + 15) / 16;
+  unsigned char *map = malloc((size_t)mi_cols * mi_rows);
+
+  le32(out, 0x46494b44);  // "DKIF"
+  le16(out, 0);
+  le16(out, 32);
+  le32(out, 0x30395056);  // "VP90"
+  le16(out, w);
+  le16(out, h);
+  le32(out, 30);
+  le32(out, 1);
+  le32(out, frames);
+  le32(out, 0);
+
+  int n = 0;
+  for (int f = 0; f < frames; f++) {
+    for (int p = 0; p < 3; p++) {
+      int pw = p ? (w + 1) / 2 : w, ph = p ? (h + 1) / 2 : h;
+      for (int y = 0; y < ph; y++)
+        if (fread(img.planes[p] + (size_t)y * img.stride[p], bps, pw, in) !=
+            (size_t)pw)
+          die("short input");
+    }
+    if (is_roi) {
+      vpx_roi_map_t roi;
+      memset(&roi, 0, sizeof(roi));
+      for (int r = 0; r < mi_rows; r++)
+        for (int x = 0; x < mi_cols; x++) {
+          int xx = (x + move * f) % mi_cols;
+          map[r * mi_cols + x] =
+              (unsigned char)(xx * 4 / mi_cols + 4 * (r * 2 / mi_rows));
+        }
+      roi.enabled = 1;
+      roi.roi_map = map;
+      roi.rows = mi_rows;
+      roi.cols = mi_cols;
+      if (f >= off0 && f < off1) {
+        memset(roi.ref_frame, -1, sizeof(roi.ref_frame));
+      } else {
+        memcpy(roi.delta_q, dq, sizeof(dq));
+        memcpy(roi.delta_lf, dlf, sizeof(dlf));
+        memcpy(roi.skip, skip, sizeof(skip));
+        memcpy(roi.ref_frame, ref, sizeof(ref));
+      }
+      if (vpx_codec_control(&c, VP9E_SET_ROI_MAP, &roi)) die("roi");
+    } else {
+      vpx_active_map_t am;
+      for (int r = 0; r < mb_rows; r++)
+        for (int x = 0; x < mb_cols; x++) {
+          int xx = (x + move * f) % mb_cols;
+          int inactive = xx >= mb_cols / 4 && xx < mb_cols * 3 / 4 &&
+                         r >= mb_rows / 4 && r < mb_rows * 3 / 4;
+          map[r * mb_cols + x] = !inactive;
+        }
+      am.active_map = map;
+      am.rows = mb_rows;
+      am.cols = mb_cols;
+      if (vpx_codec_control(&c, VP8E_SET_ACTIVEMAP, &am)) die("activemap");
+    }
+    if (vpx_codec_encode(&c, &img, f, 1, 0, VPX_DL_REALTIME)) die("encode");
+    n += drain(&c, out);
+  }
+  if (vpx_codec_encode(&c, NULL, -1, 1, 0, VPX_DL_REALTIME)) die("flush");
+  n += drain(&c, out);
+  fseek(out, 24, SEEK_SET);
+  le32(out, n);
+  fclose(out);
+  fprintf(stderr, "segenc: %d packets\n", n);
+  return 0;
+}

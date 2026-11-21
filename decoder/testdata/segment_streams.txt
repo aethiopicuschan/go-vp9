@@ -1,0 +1,104 @@
+Segmentation regression streams (decoder/segment_stream_test.go). All 4:2:0; profile 0 8-bit unless the name
+ends in _p2 (profile 2, 10-bit). One shown frame per IVF packet (hidden alt-refs live inside superframes).
+NAME.md5: one md5 per shown frame (w*h*3/2 samples, Y then U then V; 16-bit little-endian samples for _p2) of
+  ffmpeg -v error -c:v libvpx-vp9 -i NAME.ivf -pix_fmt yuv420p -f rawvideo NAME.yuv        (yuv420p10le for _p2)
+Tools: ffmpeg 8.0.1 with libvpx 1.16.0 (encoder and reference decoder).
+
+"HEAD" below is commit 14ee559, i.e. the decoder before the segmentation fixes; every stream FAILS there and
+PASSES (all frames bit-exact) after. Per-frame pattern legend, one character per coded frame:
+  k/K key frame without/with segmentation, 0 inter frame with segmentation off, c segmentation on but map and
+  data not coded (map carried over), m map coded, t map coded with temporal prediction, upper case = hidden frame.
+
+V="-c:v libvpx-vp9 -auto-alt-ref 0 -lag-in-frames 0"
+P2="-pix_fmt yuv420p10le -profile:v 2"
+TS=testsrc2=size=320x192:rate=30
+
+--- 1. ffmpeg -aq-mode (segment feature ALT_Q, delta coded)
+
+# segment_aq1_fp0.ivf (6178 B, 12 frames, Kccccccccctc)   HEAD: entropy desync at packet 2, pixels wrong from frame 0
+ffmpeg -f lavfi -i $TS -frames:v 12 $V -frame-parallel 0 -aq-mode 1 -b:v 60k segment_aq1_fp0.ivf
+# segment_aq2_fp1.ivf (6331 B, 12 frames, Kccccccccctc)   HEAD: no error, all 12 frames wrong
+ffmpeg -f lavfi -i $TS -frames:v 12 $V -frame-parallel 1 -aq-mode 2 -b:v 60k segment_aq2_fp1.ivf
+# segment_aq1_fp1_p2.ivf (6165 B, 12 frames, Kccccccccctc)   HEAD: entropy desync at packet 10, pixels wrong from frame 0
+ffmpeg -f lavfi -i $TS -frames:v 12 $V $P2 -frame-parallel 1 -aq-mode 1 -b:v 60k segment_aq1_fp1_p2.ivf
+# segment_aq3_fp0.ivf (6655 B, 30 frames, kttmttmtttttmtmtmmmmt000000000)   HEAD: entropy desync at packet 1
+ffmpeg -f lavfi -i $TS -frames:v 30 $V -frame-parallel 0 -aq-mode 3 -b:v 30k segment_aq3_fp0.ivf
+# segment_aq3_fp1.ivf (6685 B, 30 frames, kttmmmtmmmtmtmmmmmmmt000000000)   HEAD: entropy desync at packet 1
+ffmpeg -f lavfi -i $TS -frames:v 30 $V -frame-parallel 1 -aq-mode 3 -b:v 30k segment_aq3_fp1.ivf
+# segment_aq3_fp0_p2.ivf (6666 B, 30 frames, kttmttmtmtmtmtmtmtmmt000000000)   HEAD: entropy desync at packet 1
+ffmpeg -f lavfi -i $TS -frames:v 30 $V $P2 -frame-parallel 0 -aq-mode 3 -b:v 30k segment_aq3_fp0_p2.ivf
+# segment_aq3_kf.ivf (10405 B, 20 frames, kttmmmtkttmtmtkttmmt: key frames reset both maps)   HEAD: entropy desync at packet 1
+ffmpeg -f lavfi -i $TS -frames:v 20 $V -g 7 -aq-mode 3 -b:v 30k segment_aq3_kf.ivf
+# segment_aq3_er.ivf (4927 B, 14 frames, kttttttttttttt, every frame error resilient)   HEAD: entropy desync at packet 1
+ffmpeg -f lavfi -i $TS -frames:v 14 $V -error-resilient 1 -aq-mode 3 -b:v 40k segment_aq3_er.ivf
+# segment_aq1_altref.ivf (14763 B, 352x288, 24 shown / 25 coded frames, KcccccccccccccccctTcccccc)
+#   HEAD: entropy desync at packet 15, pixels wrong from frame 0
+#   (-pix_fmt yuv420p is required: the mandelbrot source would otherwise be coded as profile 1 RGB)
+MB="mandelbrot=size=352x288:rate=30,noise=alls=12:allf=t"
+A="-c:v libvpx-vp9 -pix_fmt yuv420p -auto-alt-ref 1 -lag-in-frames 16 -arnr-maxframes 7 -g 60 -frame-parallel 0 -aq-mode 1 -b:v 150k"
+ffmpeg -f lavfi -i "$MB" -frames:v 24 $A -pass 1 -passlogfile pl -f null -
+ffmpeg -f lavfi -i "$MB" -frames:v 24 $A -pass 2 -passlogfile pl segment_aq1_altref.ivf
+
+--- 2. libvpx ROI map / active map (features ALT_Q, ALT_LF, SKIP, REF_FRAME)
+
+ffmpeg has no way to set per-segment loop-filter, skip or reference-frame features, so these use a ~170 line
+libvpx API driver, segment_segenc.c.txt (realtime, cpu-used 6, CBR, q 8..56, aq-mode 0, 1 tile):
+  cp segment_segenc.c.txt segenc.c && cc -O1 -o segenc segenc.c $(pkg-config --cflags --libs vpx)
+  usage: segenc W H FRAMES BITS KBPS FRAME_PARALLEL in.yuv out.ivf roi DQ DLF SKIP REF MOVE [OFF0 OFF1]
+         segenc W H FRAMES BITS KBPS FRAME_PARALLEL in.yuv out.ivf active MOVE
+Input (lavfi):
+SRC="testsrc2=size=160x96:rate=30,noise=alls=10:allf=t:all_seed=7"
+ffmpeg -f lavfi -i "$SRC" -frames:v 12 -pix_fmt yuv420p -f rawvideo in8.yuv
+ffmpeg -f lavfi -i "$SRC" -frames:v 12 -pix_fmt yuv420p10le -f rawvideo in10.yuv
+
+ROI: segments 0..7 in a 4x2 grid that moves one 8x8 column per frame; per segment
+DQ=0,-20,20,0,-10,0,30,0        (ALT_Q, external units; coded q-index deltas -80 +80 -40 +120)
+DLF=0,10,-63,-5,0,-63,0,20      (ALT_LF; -63 gives a segment level of 0, which the intra ref delta raises to 1)
+SKIP=0,0,0,0,1,0,0,1            (SKIP on segments 4 and 7)
+REF=-1,-1,0,1,1,-1,2,-1         (REF_FRAME: segment 2 intra, 3 and 4 last, 6 golden)
+Frame 4 is coded with the ROI removed (segmentation_enabled=0); pattern kttt0ttttttt.
+# segment_roi_fp0.ivf (13050 B, 12 frames)   HEAD: entropy desync at packet 1
+segenc 160 96 12 8 50 0 in8.yuv segment_roi_fp0.ivf roi $DQ $DLF $SKIP $REF 1 4 5
+# segment_roi_fp1_p2.ivf (13714 B, 12 frames)   HEAD: entropy desync at packet 1
+segenc 160 96 12 10 50 1 in10.yuv segment_roi_fp1_p2.ivf roi $DQ $DLF $SKIP $REF 1 4 5
+
+Active map: an inactive rectangle (segment 7: SKIP + ALT_LF -63) moving one 16x16 column per frame; kttttttttt.
+# segment_active_fp1.ivf (11355 B, 10 frames)   HEAD: entropy desync at packet 2, frame 1 wrong
+segenc 160 96 10 8 60 1 in8.yuv segment_active_fp1.ivf active 1
+# segment_active_fp0_p2.ivf (11759 B, 10 frames)   HEAD: entropy desync at packet 2, frame 1 wrong
+segenc 160 96 10 10 60 0 in10.yuv segment_active_fp0_p2.ivf active 1
+
+--- 3. header-patched variants (states the libvpx encoder never emits; libvpx decodes them without error)
+
+segment_hdrpatch.py.txt rewrites uncompressed-header fields only (compressed header and tile data untouched):
+  abs:F,...               segmentation_abs_or_delta_update=1 on frames F
+  lfdelta:F:R0,R1,R2,R3:M0,M1   loop_filter_delta_update=1 on frame F with these ref / mode deltas (x = not coded)
+
+# segment_aq1_abs.ivf (6178 B): the key frame's ALT_Q values become absolute q indices (negative ones clamp to
+#   0) and stay absolute over frames 1..9, which code no segmentation data.   HEAD: entropy desync at packet 2
+python3 segment_hdrpatch.py.txt segment_aq1_fp0.ivf segment_aq1_abs.ivf abs:0
+# segment_roi_abs.ivf (13054 B) / segment_roi_abs_p2.ivf (13718 B): absolute ALT_Q and ALT_LF on frames 2, 3, 6, 8
+#   (delta on the others), ref deltas {1,2,-1,-3} and mode deltas {5,-6} from frame 1 on.   HEAD: entropy desync at packet 1
+python3 segment_hdrpatch.py.txt segment_roi_fp0.ivf segment_roi_abs.ivf abs:2,3,6,8 lfdelta:1:x,2,x,-3:5,-6
+python3 segment_hdrpatch.py.txt segment_roi_fp1_p2.ivf segment_roi_abs_p2.ivf abs:2,3,6,8 lfdelta:1:x,2,x,-3:5,-6
+# segment_aq3_modedelta.ivf (6658 B) / segment_aq3_modedelta_p2.ivf (6669 B): mode deltas {-7,+6} from frame 1 on
+#   (ZEROMV blocks get -7, every other inter mode +6 even when its MV is zero).   HEAD: entropy desync at packet 1
+python3 segment_hdrpatch.py.txt segment_aq3_fp0.ivf segment_aq3_modedelta.ivf lfdelta:1:x,x,x,x:-7,6
+python3 segment_hdrpatch.py.txt segment_aq3_fp0_p2.ivf segment_aq3_modedelta_p2.ivf lfdelta:1:x,x,x,x:-7,6
+
+--- Which stream pins which rule (each line: undo that one rule in the fixed decoder -> these streams fail)
+
+  mode delta picked by "MV == 0" instead of the mode (mode_lf_lut)      aq3_modedelta[_p2], roi_abs[_p2]
+  ref/mode deltas not applied when the segment filter level is 0         roi_fp0, roi_fp1_p2, roi_abs[_p2]
+  delta scale taken from the segment level instead of the frame level    roi_fp0, roi_fp1_p2, roi_abs[_p2]
+  ALT_LF always a delta (abs flag ignored)                               roi_abs[_p2]
+  abs flag not persistent across frames without a data update            aq1_abs
+  absolute q applied to segments without ALT_Q                           aq1_abs, roi_abs[_p2]
+  feature data not persistent across frames without a data update        aq1_*, aq2_fp1
+  map not carried over / segment id not taken from it on "c" frames      aq1_*, aq2_fp1
+  predicted id not the minimum over the block                            aq1_*, roi_*
+  seg-id prediction context ignored                                      all
+  maps swapped after a frame with segmentation off                       roi_*
+  maps not swapped after a hidden frame                                  aq1_altref
+  no reset (features, both maps) on key frames                           aq3_kf
+  no reset on error-resilient frames                                     aq3_er

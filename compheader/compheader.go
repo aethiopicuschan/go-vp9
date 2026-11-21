@@ -293,9 +293,22 @@ func diffUpdateProb(br *boolcoder.Reader, p uint8) uint8 {
 // (InterpSwitchable triggers reading interp filter probs).
 // allowHPMV controls whether high-precision MV probs are read.
 func Decode(br *boolcoder.Reader, isIntra bool, interpFilter int, allowHPMV bool, compoundAllowed bool, probs *Probs) error {
-	probs.TxMode = readTxMode(br)
-	if probs.TxMode == TxModeSelect {
-		readTxModeProbs(br, probs)
+	return DecodeLossless(br, isIntra, interpFilter, allowHPMV, compoundAllowed, false, probs)
+}
+
+// DecodeLossless is Decode with the frame's lossless flag (base_q_idx == 0
+// and all delta_q == 0). A lossless frame carries no tx_mode syntax: tx_mode
+// is ONLY_4X4 and the header starts directly with the coefficient prob
+// updates (libvpx read_compressed_header:
+// cm->tx_mode = xd->lossless ? ONLY_4X4 : read_tx_mode(&r)).
+func DecodeLossless(br *boolcoder.Reader, isIntra bool, interpFilter int, allowHPMV bool, compoundAllowed bool, lossless bool, probs *Probs) error {
+	if lossless {
+		probs.TxMode = TxModeOnly4x4
+	} else {
+		probs.TxMode = readTxMode(br)
+		if probs.TxMode == TxModeSelect {
+			readTxModeProbs(br, probs)
+		}
 	}
 	readCoefProbs(br, probs)
 	readSkipProbs(br, probs)

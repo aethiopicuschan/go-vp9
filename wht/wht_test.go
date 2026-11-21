@@ -104,3 +104,32 @@ func TestIWHT4x4RowSymmetry(t *testing.T) {
 		}
 	}
 }
+
+// TestIWHT4x4ColumnOrder pins the column pass input mapping of libvpx
+// vpx_iwht4x4_16_add_c (a1,c1,d1,b1 = rows 0,1,2,3). Input: only c[4]=16.
+// Row pass: row 1 = [2,2,2,2]. Column pass on (0,2,0,0): a1=2, d1=0, e1=1,
+// b1=1, c1=-1, a1=1, d1=-1 → rows 1, 1, -1, -1.
+func TestIWHT4x4ColumnOrder(t *testing.T) {
+	want := [16]int16{
+		1, 1, 1, 1,
+		1, 1, 1, 1,
+		-1, -1, -1, -1,
+		-1, -1, -1, -1,
+	}
+	c := make([]int16, 16)
+	c[4] = 16
+	IWHT4x4(c)
+	for i, v := range c {
+		if v != want[i] {
+			t.Fatalf("IWHT4x4: c[%d] = %d, want %d", i, v, want[i])
+		}
+	}
+	c16 := make([]int64, 16)
+	c16[4] = 16
+	IWHT4x4_16(c16)
+	for i, v := range c16 {
+		if v != int64(want[i]) {
+			t.Fatalf("IWHT4x4_16: c[%d] = %d, want %d", i, v, want[i])
+		}
+	}
+}

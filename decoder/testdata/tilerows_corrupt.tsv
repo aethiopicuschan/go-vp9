@@ -1,0 +1,169 @@
+# stream	variant	verdict	md5	libvpx message
+# verdict: OK = vpxdec decoded the frame (md5 of its --i420 output, 16-bit LE for 10-bit),
+#          ERR = vpx_codec_decode failed. Recorded with vpxdec (libvpx, single thread).
+tilerows_r1c1_p2	flip_mid_t0	ERR	-	Additional information: Failed to decode tile data
+tilerows_r1c1_p2	flip_mid_t1	ERR	-	Additional information: Failed to decode tile data
+tilerows_r1c1_p2	flip_mid_t2	ERR	-	Additional information: Failed to decode tile data
+tilerows_r1c1_p2	flip_mid_t3	ERR	-	Additional information: Failed to decode tile data
+tilerows_r1c1_p2	marker_t0	ERR	-	Additional information: Failed to allocate bool decoder 1
+tilerows_r1c1_p2	marker_t1	ERR	-	Additional information: Failed to allocate bool decoder 1
+tilerows_r1c1_p2	marker_t2	ERR	-	Additional information: Failed to allocate bool decoder 1
+tilerows_r1c1_p2	marker_t3	ERR	-	Additional information: Failed to allocate bool decoder 1
+tilerows_r1c1_p2	orig	OK	f13e7466ebcef522c0a1c936e7b71228	-
+tilerows_r1c1_p2	size_half_t0	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r1c1_p2	size_half_t1	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r1c1_p2	size_half_t2	ERR	-	Additional information: Failed to decode tile data
+tilerows_r1c1_p2	size_huge_t0	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r1c1_p2	size_huge_t1	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r1c1_p2	size_huge_t2	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r1c1_p2	size_minus1_t0	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r1c1_p2	size_minus1_t1	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r1c1_p2	size_minus1_t2	ERR	-	Additional information: Failed to decode tile data
+tilerows_r1c1_p2	size_plus1_t0	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r1c1_p2	size_plus1_t1	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r1c1_p2	size_plus1_t2	ERR	-	Additional information: Failed to allocate bool decoder 1
+tilerows_r1c1_p2	size_rest_plus1_t0	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r1c1_p2	size_rest_plus1_t1	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r1c1_p2	size_rest_plus1_t2	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r1c1_p2	size_rest_t0	ERR	-	Additional information: Truncated packet or corrupt tile length
+tilerows_r1c1_p2	size_rest_t1	ERR	-	Additional information: Truncated packet or corrupt tile length
+tilerows_r1c1_p2	size_rest_t2	ERR	-	Additional information: Truncated packet or corrupt tile length
+tilerows_r1c1_p2	size_zero_t0	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r1c1_p2	size_zero_t1	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r1c1_p2	size_zero_t2	ERR	-	Additional information: Truncated packet or corrupt tile length
+tilerows_r1c1_p2	trunc_1	OK	f13e7466ebcef522c0a1c936e7b71228	-
+tilerows_r1c1_p2	trunc_2	ERR	-	Additional information: Failed to decode tile data
+tilerows_r1c1_p2	trunc_4	ERR	-	-
+tilerows_r1c1_p2	trunc_8	ERR	-	Additional information: Failed to decode tile data
+tilerows_r1c1_p2	trunc_222	ERR	-	Additional information: Failed to decode tile data
+tilerows_r1c1_p2	trunc_443	ERR	-	Additional information: Failed to decode tile data
+tilerows_r1c1_p2	trunc_444	ERR	-	Additional information: Truncated packet or corrupt tile length
+tilerows_r1c1_p2	trunc_445	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r1c1_p2	trunc_448	ERR	-	-
+tilerows_r1c1_p2	trunc_449	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r1c1_p2	trunc_467	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r1c1_p2	zero_half_t0	ERR	-	Additional information: Failed to decode tile data
+tilerows_r1c1_p2	zero_half_t1	ERR	-	Additional information: Failed to decode tile data
+tilerows_r1c1_p2	zero_half_t2	ERR	-	Additional information: Failed to decode tile data
+tilerows_r1c1_p2	zero_half_t3	OK	768a0ac081e906a71b3de0c3cd499535	-
+tilerows_r1c1_p2	zero_tail1_t0	ERR	-	Additional information: Failed to decode tile data
+tilerows_r1c1_p2	zero_tail1_t1	ERR	-	Additional information: Failed to decode tile data
+tilerows_r1c1_p2	zero_tail1_t2	OK	f13e7466ebcef522c0a1c936e7b71228	-
+tilerows_r1c1_p2	zero_tail1_t3	OK	f13e7466ebcef522c0a1c936e7b71228	-
+tilerows_r1c1_p2	zero_tail2_t0	ERR	-	Additional information: Failed to decode tile data
+tilerows_r1c1_p2	zero_tail2_t1	ERR	-	Additional information: Failed to decode tile data
+tilerows_r1c1_p2	zero_tail2_t2	ERR	-	Additional information: Failed to decode tile data
+tilerows_r1c1_p2	zero_tail2_t3	OK	e9172c69f0b1f2734842437a6d2a2c84	-
+tilerows_r1c1_p2	zero_tail3_t0	ERR	-	Additional information: Failed to decode tile data
+tilerows_r1c1_p2	zero_tail3_t1	ERR	-	Additional information: Failed to decode tile data
+tilerows_r1c1_p2	zero_tail3_t2	ERR	-	Additional information: Failed to decode tile data
+tilerows_r1c1_p2	zero_tail3_t3	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	flip_mid_t0	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	flip_mid_t1	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	flip_mid_t2	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	flip_mid_t3	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	flip_mid_t4	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	flip_mid_t5	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	flip_mid_t6	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	flip_mid_t7	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	marker_t0	ERR	-	Additional information: Failed to allocate bool decoder 1
+tilerows_r2c1_640x384	marker_t1	ERR	-	Additional information: Failed to allocate bool decoder 1
+tilerows_r2c1_640x384	marker_t2	ERR	-	Additional information: Failed to allocate bool decoder 1
+tilerows_r2c1_640x384	marker_t3	ERR	-	Additional information: Failed to allocate bool decoder 1
+tilerows_r2c1_640x384	marker_t4	ERR	-	Additional information: Failed to allocate bool decoder 1
+tilerows_r2c1_640x384	marker_t5	ERR	-	Additional information: Failed to allocate bool decoder 1
+tilerows_r2c1_640x384	marker_t6	ERR	-	Additional information: Failed to allocate bool decoder 1
+tilerows_r2c1_640x384	marker_t7	ERR	-	Additional information: Failed to allocate bool decoder 1
+tilerows_r2c1_640x384	orig	OK	daa0d1837501710df068b320fce53368	-
+tilerows_r2c1_640x384	size_half_t0	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_half_t1	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_half_t2	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_half_t3	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_half_t4	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_half_t5	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_half_t6	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	size_huge_t0	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_huge_t1	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_huge_t2	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_huge_t3	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_huge_t4	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_huge_t5	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_huge_t6	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_minus1_t0	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_minus1_t1	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_minus1_t2	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_minus1_t3	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_minus1_t4	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_minus1_t5	ERR	-	Additional information: Truncated packet or corrupt tile length
+tilerows_r2c1_640x384	size_minus1_t6	ERR	-	Additional information: Failed to allocate bool decoder 1
+tilerows_r2c1_640x384	size_plus1_t0	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_plus1_t1	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_plus1_t2	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_plus1_t3	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_plus1_t4	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_plus1_t5	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_plus1_t6	ERR	-	Additional information: Failed to allocate bool decoder 1
+tilerows_r2c1_640x384	size_rest_plus1_t0	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_rest_plus1_t1	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_rest_plus1_t2	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_rest_plus1_t3	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_rest_plus1_t4	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_rest_plus1_t5	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_rest_plus1_t6	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_rest_t0	ERR	-	Additional information: Truncated packet or corrupt tile length
+tilerows_r2c1_640x384	size_rest_t1	ERR	-	Additional information: Truncated packet or corrupt tile length
+tilerows_r2c1_640x384	size_rest_t2	ERR	-	Additional information: Truncated packet or corrupt tile length
+tilerows_r2c1_640x384	size_rest_t3	ERR	-	Additional information: Truncated packet or corrupt tile length
+tilerows_r2c1_640x384	size_rest_t4	ERR	-	Additional information: Truncated packet or corrupt tile length
+tilerows_r2c1_640x384	size_rest_t5	ERR	-	Additional information: Truncated packet or corrupt tile length
+tilerows_r2c1_640x384	size_rest_t6	ERR	-	Additional information: Truncated packet or corrupt tile length
+tilerows_r2c1_640x384	size_zero_t0	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_zero_t1	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_zero_t2	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_zero_t3	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_zero_t4	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_zero_t5	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	size_zero_t6	ERR	-	Additional information: Truncated packet or corrupt tile length
+tilerows_r2c1_640x384	trunc_1	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	trunc_2	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	trunc_4	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	trunc_8	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	trunc_156	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	trunc_312	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	trunc_313	ERR	-	Additional information: Truncated packet or corrupt tile length
+tilerows_r2c1_640x384	trunc_314	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	trunc_317	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	trunc_318	ERR	-	-
+tilerows_r2c1_640x384	trunc_338	ERR	-	Additional information: Truncated packet or corrupt tile size
+tilerows_r2c1_640x384	zero_half_t0	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	zero_half_t1	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	zero_half_t2	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	zero_half_t3	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	zero_half_t4	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	zero_half_t5	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	zero_half_t6	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	zero_half_t7	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	zero_tail1_t0	OK	daa0d1837501710df068b320fce53368	-
+tilerows_r2c1_640x384	zero_tail1_t1	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	zero_tail1_t2	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	zero_tail1_t3	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	zero_tail1_t4	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	zero_tail1_t5	OK	daa0d1837501710df068b320fce53368	-
+tilerows_r2c1_640x384	zero_tail1_t6	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	zero_tail1_t7	OK	daa0d1837501710df068b320fce53368	-
+tilerows_r2c1_640x384	zero_tail2_t0	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	zero_tail2_t1	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	zero_tail2_t2	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	zero_tail2_t3	OK	bd59971b0ddf80d8f688f1aeca201aaa	-
+tilerows_r2c1_640x384	zero_tail2_t4	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	zero_tail2_t5	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	zero_tail2_t6	OK	daa0d1837501710df068b320fce53368	-
+tilerows_r2c1_640x384	zero_tail2_t7	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	zero_tail3_t0	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	zero_tail3_t1	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	zero_tail3_t2	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	zero_tail3_t3	OK	bf20bbce109e8cc96f473dac55b93baa	-
+tilerows_r2c1_640x384	zero_tail3_t4	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	zero_tail3_t5	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	zero_tail3_t6	ERR	-	Additional information: Failed to decode tile data
+tilerows_r2c1_640x384	zero_tail3_t7	ERR	-	Additional information: Failed to decode tile data

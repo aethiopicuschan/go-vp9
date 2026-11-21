@@ -205,6 +205,64 @@ real-stream-tested.
 | M19 | Temporal MV candidates (co-located lookup) | ✅ |
 | M20 | Probability adaptation between frames | ✅ coef / mode / mv backward adaptation (`frame_parallel_decoding_mode=0`), see `decoder/adapt_stream_test.go` |
 
+## Using the decoder (behaviour notes)
+
+`decoder.Decoder` mirrors libvpx (`vpx_codec_decode` + `vpx_codec_get_frame`)
+packet by packet: same accept/reject verdict, same picture, same "no output".
+Details are in the `decoder` package documentation; the points that matter to
+callers:
+
+- **Call `DecodeFrame` for profile 0/1 (8-bit) and `DecodeFrame16` for profile
+  2/3 (10/12-bit).** Both take one IVF packet payload (possibly a superframe).
+- **`(nil, nil)` means "no frame for this packet"**: the packet decoded but
+  its last frame is hidden (a lone alt-ref or intra-only frame), or it is a
+  `show_existing_frame` that arrived while the decoder is waiting for a key
+  frame after an error. libvpx outputs nothing for these packets either.
+- **Frame size is the true size.** `Frame.Width`/`Height` may be odd; the
+  chroma planes are `UVWidth()` x `UVHeight()` = `(Width+SubX)>>SubX` by
+  `(Height+SubY)>>SubY`.
+- **Not every stream is 4:2:0.** Profile 1 and 3 frames are 4:4:4, 4:2:2 or
+  4:4:0; read `Frame.SubX`/`SubY` (or `UVWidth`/`UVHeight`) instead of
+  assuming half-size chroma.
+- **Errors are sticky until a key frame.** After any decode error every packet
+  fails with `decoder.ErrNeedResync` until a key frame or an intra-only frame
+  arrives (libvpx `need_resync`). Test with `errors.Is`.
+- **Frame size limit.** Frames wider or taller than
+  `decoder.DefaultMaxFrameSize` (16384) are rejected with an error wrapping
+  `decoder.ErrFrameSize`; `SetMaxFrameSize` changes the limit.
+- **Trailing data.** Non-zero bytes behind the last tile of a plain packet are
+  decoded as a further frame (and usually fail), as in libvpx; zero padding is
+  ignored.
+- **Reference scaling is not implemented**: an inter frame whose references
+  have a different size is rejected.
+- **Concurrency.** One `Decoder` must not be used from two goroutines at once.
+  Separate `Decoder` instances can be interleaved or used from different
+  goroutines, but decoding is serialised process-wide (the lower-level
+  packages keep per-frame parameters in package variables), so they do not
+  run in parallel.
+
+### API stability
+
+Only `decoder` (with `refbuf.Frame`/`Frame16`, the frame types it returns) and
+`ivf` are meant for applications. The other packages are the decoder's
+building blocks; they are importable but their signatures change with the
+decoder and carry no compatibility promise. Source-incompatible changes in
+them since commit 14ee559:
+
+- `blockmode.FrameInfo` has slice fields (segmentation maps) and is no longer
+  comparable with `==`.
+- `loopfilter.LevelForBlock` takes an additional `bool` parameter.
+- `reconstruct.Block` and `reconstruct.Block16` return the block's eob total
+  (`int`) instead of nothing.
+- `frame.ParseRefs`/`Parse` may return a non-nil partial header together with
+  an error (header rejected after `frame_context_idx`).
+- `refbuf.Frame`/`Frame16`: `Width`/`Height` are the true size (previously
+  rounded up to even on subsampled axes); `UVWidth`/`UVHeight` round up.
+
+Behaviour changes of `decoder` itself since 14ee559: the `(nil, nil)` result,
+true (odd) frame sizes, non-4:2:0 output for profile 1/3, the frame size
+limit, the sticky error state and the trailing-data rule, all described above.
+
 ## Layout
 - `boolcoder/` — VP9 boolean arithmetic coder (M0).
 - `ivf/` — IVF container reader + writer (M1).

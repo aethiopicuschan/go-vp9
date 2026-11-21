@@ -1,0 +1,76 @@
+Regression streams for intra-only frames, reset_frame_context / frame_context_idx handling,
+error-resilient sign bias and show_existing_frame (decoder/intraonly_stream_test.go).
+
+No libvpx encoder path reachable through ffmpeg produced these header traits (tried: -error-resilient 1
+with good / realtime deadlines, -ts-parameters temporal layering modes 2 and 3, -auto-alt-ref 1 and 6;
+the resulting streams were already bit-exact at commit 14ee559 and none contains intra_only=1,
+reset_frame_context != 0 or show_existing_frame=1). The streams below are therefore ordinary libvpx
+encodes whose UNCOMPRESSED HEADERS were rewritten bit by bit with intraonly_vp9hdr.py (in this
+directory); the compressed header and tile data are copied verbatim. Each derived stream was validated
+with libvpx: `ffmpeg -c:v libvpx-vp9` (libvpx 1.16.0) and libvpx's own vpxdec (v1.17.0 tree) decode
+every one without error and produce identical output.
+
+All: 128x96, 4:2:0, profile 0 8-bit, or profile 2 10-bit when the name ends in _p2.
+NAME.md5: one md5 per shown frame (w*h*3/2 samples, Y then U then V; 16-bit little-endian for _p2) of
+  ffmpeg -c:v libvpx-vp9 -i NAME.ivf -pix_fmt yuv420p[10le] -f rawvideo NAME.yuv
+One shown frame per IVF packet.
+
+--- generation (bash; run in a scratch dir containing intraonly_vp9hdr.py) ---------------------------
+E="-c:v libvpx-vp9 -b:v 150k -auto-alt-ref 0 -lag-in-frames 0"
+for P in 8 10; do
+  if [ $P = 8 ]; then PF=yuv420p; S=; else PF=yuv420p10le; S=_p2; fi
+  # sources: A = one key frame of picture A; b_* = key + inter frames of picture B
+  ffmpeg -f lavfi -i testsrc=size=128x96:rate=30  -frames:v 1 $E -frame-parallel 1 -pix_fmt $PF a$S.ivf
+  ffmpeg -f lavfi -i testsrc2=size=128x96:rate=30 -frames:v 5 $E -frame-parallel 1 -pix_fmt $PF b_fp1$S.ivf
+  ffmpeg -f lavfi -i testsrc2=size=128x96:rate=30 -frames:v 2 $E -frame-parallel 0 -pix_fmt $PF b_fp0$S.ivf
+  ffmpeg -f lavfi -i testsrc2=size=128x96:rate=30 -frames:v 5 $E -error-resilient 1 -pix_fmt $PF b_er$S.ivf
+  python3 intraonly_vp9hdr.py build io_reset3_ctx1     intraonly_reset3_ctx1$S.ivf     a$S.ivf b_fp1$S.ivf
+  python3 intraonly_vp9hdr.py build io_reset2_keeprefs intraonly_reset2_keeprefs$S.ivf a$S.ivf b_fp1$S.ivf
+  python3 intraonly_vp9hdr.py build io_reset1_adapt    intraonly_reset1_adapt$S.ivf    a$S.ivf b_fp0$S.ivf
+  python3 intraonly_vp9hdr.py build key_ctx2           intraonly_key_ctx2$S.ivf        b_fp1$S.ivf
+  python3 intraonly_vp9hdr.py build er_signbias        intraonly_er_signbias$S.ivf     b_er$S.ivf
+  python3 intraonly_vp9hdr.py build show_existing      intraonly_show_existing$S.ivf   b_fp0$S.ivf
+done
+# header dump of any stream:  python3 intraonly_vp9hdr.py dump NAME.ivf
+# libvpx cross-check:         vpxdec --i420 -o NAME.vpxdec.yuv NAME.ivf && cmp NAME.yuv NAME.vpxdec.yuv
+
+--- streams ("HEAD" = commit 14ee559, result of decoding with the unfixed decoder) ---------------------
+
+intraonly_reset3_ctx1[_p2].ivf  (6192 / 6122 B, 5 shown frames, 6 coded)
+  pkt0: A's key frame. pkt1: superframe { B's key frame re-headed as a hidden intra-only frame with
+  reset_frame_context=3, refresh_frame_flags=0xff, coded frame_context_idx=1 ; B's first inter frame }.
+  pkt2-4: B's remaining inter frames. libvpx output = A, then B's frames 1-4 exactly as in b_fp1.
+  HEAD: 8-bit and _p2 both "entropy desync (bitstream over-read)" at packet 1.  FAIL before, PASS after.
+  Needs: intra-only header order, key-frame-style mode info, frame_context_idx forced to 0.
+
+intraonly_reset2_keeprefs[_p2].ivf  (6192 / 6122 B, 5 shown, 6 coded)
+  As above but reset_frame_context=2, coded frame_context_idx=0, refresh_frame_flags=0x06: slot 0 (LAST of the
+  following inter frames) still holds picture A, so the output differs from b_fp1 (references are not reset).
+  HEAD: 8-bit over-read error at packet 1; _p2 no error but frames 2-4 mismatch.  FAIL before, PASS after.
+  Needs: intra-only header order, key-frame-style mode info.
+
+intraonly_reset1_adapt[_p2].ivf  (5122 / 5068 B, 2 shown, 3 coded)
+  pkt0: A's key frame patched to refresh_frame_context=0 (context 0 stays default). pkt1: superframe
+  { intra-only frame, reset_frame_context=1 (no reset), coded frame_context_idx=3, frame_parallel=0,
+  refresh_frame_context=1 ; B's first inter frame (frame_parallel=0, ctx 0) }. The inter frame decodes
+  correctly only if the intra-only frame adapted from, and saved to, context 0.
+  libvpx output = A, then frame 1 of b_fp0.
+  HEAD: both over-read error at packet 1.  FAIL before, PASS after.
+  Needs: intra-only header order, key-frame-style mode info, frame_context_idx forced to 0.
+
+intraonly_key_ctx2[_p2].ivf  (4523 / 4471 B, 5 shown, 5 coded)
+  b_fp1 with the key frame's frame_context_idx patched from 0 to 2. libvpx output identical to b_fp1.
+  HEAD: frame 1 mismatches, then over-read error at packet 2 (both depths).  FAIL before, PASS after.
+  Needs: frame_context_idx forced to 0.
+
+intraonly_er_signbias[_p2].ivf  (4568 / 4520 B, 5 shown, 5 coded)
+  b_er (error_resilient_mode=1 on every frame) with ref_frame_sign_bias[ALTREF]=1 patched into every inter
+  frame header. libvpx output identical to b_er (setup_past_independence zeroes the sign biases after the
+  header was read, so reference_mode stays SINGLE and no compound syntax is read).
+  HEAD: 8-bit frames 1-4 mismatch (no error); _p2 frame 1 mismatches then over-read error at packet 2.
+  FAIL before, PASS after.  Needs: sign-bias zeroing.
+
+intraonly_show_existing[_p2].ivf  (3466 / 3430 B, 3 shown, 3 packets)   -- CONTROL
+  b_fp0 (key + inter, frame_parallel=0) followed by a 1-byte show_existing_frame packet for slot 0.
+  libvpx output = b_fp0's two frames, then the second one again.
+  HEAD: already bit-exact.  PASS before and after (guards show_existing_frame: output only, no state change).

@@ -1,0 +1,46 @@
+// Generates boolcoder/testdata/vpx_find_end_golden.txt from the real libvpx
+// vpx_reader (vpx_dsp/bitreader.[ch]). One line per case:
+//   <buffer hex or "-"> <probs hex, 2 digits per read> <ends>
+// ends = comma separated vpx_reader_find_end() offsets (taken on a copy of the
+// reader, find_end modifies it): ends[0] after vpx_reader_init, ends[i+1]
+// after read i (vpx_read(r, probs[i])).
+#include <stdio.h>
+#include <stdint.h>
+#include "vpx_dsp/bitreader.h"
+static uint32_t s = 4242;
+static uint32_t rnd(void) { s = s * 1664525u + 1013904223u; return s >> 8; }
+static int end_of(const vpx_reader *r, const uint8_t *buf) {
+  vpx_reader c = *r;
+  return (int)(vpx_reader_find_end(&c) - buf);
+}
+int main(void) {
+  printf("# Generated from the real libvpx vpx_reader (vpx_dsp/bitreader.c) by testdata/vpx_find_end_golden_gen.c.txt; checked by findend_test.go\n");
+  for (int c = 0; c < 120; c++) {
+    int n = c < 40 ? c : rnd() % 48;   // 0..47 bytes: around and well past the 8-byte register
+    uint8_t buf[64] = { 0 };
+    int mode = c % 3;
+    for (int i = 0; i < n; i++) buf[i] = mode == 0 ? 0 : mode == 1 ? rnd() & 0xff : (rnd() & 0x7f);
+    vpx_reader r;
+    vpx_reader_init(&r, buf, n, NULL, NULL);
+    int reads = mode == 0 ? 8 * n + 12 : 3 * n + 12;
+    static int ends[1024];
+    static int probs[1024];
+    if (n == 0) printf("-");
+    for (int i = 0; i < n; i++) printf("%02x", buf[i]);
+    ends[0] = end_of(&r, buf);
+    for (int i = 0; i < reads; i++) {
+      int p = 1 + rnd() % 255;
+      if (mode == 0) p = 128;                       // 1 bit per read: hits every position
+      else if (rnd() % 4 == 0) p = (rnd() & 1) ? 1 : 255;
+      probs[i] = p;
+      vpx_read(&r, p);
+      ends[i + 1] = end_of(&r, buf);
+    }
+    printf(" ");
+    for (int i = 0; i < reads; i++) printf("%02x", probs[i]);
+    printf(" ");
+    for (int i = 0; i <= reads; i++) printf(i ? ",%d" : "%d", ends[i]);
+    printf("\n");
+  }
+  return 0;
+}

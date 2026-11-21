@@ -45,48 +45,55 @@ func ParamsForLevel(level, sharpness int) Params {
 	}
 }
 
-// LevelForBlock computes the per-block loop filter level (spec §8.8.1 / libvpx vp9_loop_filter.c).
+// LevelForBlock computes the per-block loop filter level (libvpx
+// vp9_loop_filter_frame_init + get_filter_level).
 //
-// segLFActive: SEG_LVL_ALT_LF is enabled for this block's segment.
-// segLFDelta: the segment's LF delta (always additive, never absolute).
+// segLFActive: SEG_LVL_ALT_LF is enabled for this block's segment (and
+// segmentation is enabled on the frame).
+// segLFData / segAbs: the segment's feature value, applied as a delta to
+// baseLevel or, with segmentation_abs_or_delta_update set, as the level itself.
 // deltaEnabled: frame-level mode_ref_delta_enabled flag.
 // refFrame: 0=INTRA, 1=LAST, 2=GOLDEN, 3=ALTREF.
-// isZeroMV: inter block with zero MV (uses modeDeltas[0], else modeDeltas[1]).
+// zeroMVMode: the inter prediction mode is ZEROMV (mode_lf_lut index 0 →
+// modeDeltas[0]); every other inter mode uses modeDeltas[1], whatever the MV
+// value. Intra blocks get the INTRA ref delta only.
+//
+// The ref/mode deltas are scaled by 1 << (baseLevel >> 5) and applied whenever
+// deltaEnabled is set — also when the segment level is 0.
 func LevelForBlock(
 	baseLevel int,
-	segLFActive bool, segLFDelta int16,
+	segLFActive bool, segLFData int16, segAbs bool,
 	deltaEnabled bool,
-	refFrame int, isInter bool, isZeroMV bool,
+	refFrame int, isInter bool, zeroMVMode bool,
 	refDeltas [4]int, modeDeltas [2]int,
 ) int {
+	clamp := func(v int) int {
+		if v < 0 {
+			return 0
+		}
+		if v > 63 {
+			return 63
+		}
+		return v
+	}
 	level := baseLevel
 	if segLFActive {
-		level += int(segLFDelta)
-		if level < 0 {
-			level = 0
-		} else if level > 63 {
-			level = 63
+		if segAbs {
+			level = clamp(int(segLFData))
+		} else {
+			level = clamp(baseLevel + int(segLFData))
 		}
 	}
-	if deltaEnabled && level > 0 {
-		r := refFrame
-		if r < 0 || r >= 4 {
-			r = 0
-		}
-		scale := 1 << uint(baseLevel>>5)
-		level += refDeltas[r] * scale
-		if isInter {
-			if isZeroMV {
-				level += modeDeltas[0] * scale
-			} else {
-				level += modeDeltas[1] * scale
-			}
-		}
-		if level < 0 {
-			level = 0
-		} else if level > 63 {
-			level = 63
-		}
+	if !deltaEnabled {
+		return level
 	}
-	return level
+	scale := 1 << uint(baseLevel>>5)
+	if !isInter || refFrame <= 0 || refFrame >= 4 {
+		return clamp(level + refDeltas[0]*scale)
+	}
+	mode := 1
+	if zeroMVMode {
+		mode = 0
+	}
+	return clamp(level + refDeltas[refFrame]*scale + modeDeltas[mode]*scale)
 }

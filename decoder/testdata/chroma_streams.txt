@@ -1,0 +1,32 @@
+Generation of the chroma_* regression streams (decoder/chroma_stream_test.go).
+ffmpeg with libvpx-vp9 as encoder and as explicit reference decoder.
+
+  SRC="testsrc2=size=104x72:rate=30,rotate=a=t/2:ow=104:oh=72"
+
+  gen() {   # gen NAME PIX_FMT
+    for p in 1 2; do
+      ffmpeg -y -v error -f lavfi -i "$SRC" -frames:v 24 -c:v libvpx-vp9 -pix_fmt $2 \
+        -b:v 60k -cpu-used 0 -auto-alt-ref 1 -lag-in-frames 16 \
+        -pass $p -passlogfile /tmp/chroma_$1.log -f ivf chroma_$1.ivf
+    done
+    # one md5 per shown frame, native pixel format (no -pix_fmt conversion)
+    ffmpeg -y -v error -c:v libvpx-vp9 -i chroma_$1.ivf -f framemd5 - \
+      | grep -v '^#' | awk -F', *' '{print $NF}' > chroma_$1.md5
+  }
+
+  gen 444        yuv444p        # profile 1, 4:4:4
+  gen 422        yuv422p        # profile 1, 4:2:2
+  gen 440        yuv440p        # profile 1, 4:4:0
+  gen 444_p3     yuv444p10le    # profile 3, 10-bit 4:4:4
+  gen 422_p3     yuv422p10le    # profile 3, 10-bit 4:2:2
+  gen 440_p3     yuv440p10le    # profile 3, 10-bit 4:4:0
+  gen 444_p3_12  yuv444p12le    # profile 3, 12-bit 4:4:4
+  gen srgb       gbrp           # profile 1, color_space 7 (sRGB => 4:4:4), planes G,B,R
+
+Each stream: 104x72 (13x9 mode-info units), 24 packets = 24 shown frames
+(hidden alt-refs in superframes), about 6.4 KB. All contain compound
+prediction and sub-8x8 inter blocks.
+
+State at commit 14ee559 (before non-4:2:0 support), every stream: frame 0
+(key frame) wrong pixels, then "entropy desync (bitstream over-read)" at
+packet 1 (packet 2 for chroma_422). After the change: all 24 frames md5-exact.

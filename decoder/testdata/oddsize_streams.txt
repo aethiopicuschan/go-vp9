@@ -1,0 +1,27 @@
+Generation commands for the oddsize_* regression streams (TestOddSizeStreams).
+Tool: ffmpeg 8.0.1 with libvpx-vp9 (encoder and reference decoder).
+Regenerating with these commands reproduced every .ivf byte-identically.
+
+NAME.md5 = one md5 per shown frame of the libvpx reference decode
+  8-bit : ffmpeg -v error -c:v libvpx-vp9 -i NAME.ivf -pix_fmt yuv420p     -f rawvideo NAME.yuv
+  10-bit: ffmpeg -v error -c:v libvpx-vp9 -i NAME.ivf -pix_fmt yuv420p10le -f rawvideo NAME.yuv
+split into frames of (w*h + 2*ceil(w/2)*ceil(h/2)) * bytes-per-sample bytes.
+
+Before/after the fix (decoder at 14ee559 vs. patched), verified by running:
+  oddsize_66x66       before: entropy desync error on frame 0      after: 16/16 exact
+  oddsize_66x66_p2    before: entropy desync error on frame 0      after: 16/16 exact
+  oddsize_200x130     before: entropy desync error on frame 0      after: 16/16 exact
+  oddsize_200x130_p2  before: entropy desync error on frame 0      after: 16/16 exact
+  oddsize_72x72       before: 14 frames differ, first frame 2      after: 16/16 exact
+  oddsize_72x72_p2    before: 16 frames differ, first frame 0      after: 16/16 exact
+  oddsize_10x10       before: 10 frames differ, first frame 0      after: 10/10 exact
+  oddsize_10x10_p2    before: 10 frames differ, first frame 0      after: 10/10 exact
+
+ffmpeg -v error -y -f lavfi -i "testsrc2=size=66x66:rate=30" -frames:v 16 -pix_fmt yuv420p -frame-parallel 0 -c:v libvpx-vp9 -auto-alt-ref 0 -lag-in-frames 0 -b:v 15k oddsize_66x66.ivf
+ffmpeg -v error -y -f lavfi -i "testsrc2=size=66x66:rate=30" -frames:v 16 -pix_fmt yuv420p10le -frame-parallel 0 -c:v libvpx-vp9 -profile:v 2 -auto-alt-ref 0 -lag-in-frames 0 -b:v 15k oddsize_66x66_p2.ivf
+ffmpeg -v error -y -f lavfi -i "testsrc2=size=200x130:rate=30" -frames:v 16 -pix_fmt yuv420p -frame-parallel 0 -c:v libvpx-vp9 -auto-alt-ref 0 -lag-in-frames 0 -b:v 15k oddsize_200x130.ivf
+ffmpeg -v error -y -f lavfi -i "testsrc2=size=200x130:rate=30" -frames:v 16 -pix_fmt yuv420p10le -frame-parallel 0 -c:v libvpx-vp9 -profile:v 2 -auto-alt-ref 0 -lag-in-frames 0 -b:v 15k oddsize_200x130_p2.ivf
+ffmpeg -v error -y -f lavfi -i "testsrc2=size=72x72:rate=30" -frames:v 16 -pix_fmt yuv420p -frame-parallel 1 -c:v libvpx-vp9 -auto-alt-ref 0 -lag-in-frames 0 -b:v 15k oddsize_72x72.ivf
+ffmpeg -v error -y -f lavfi -i "testsrc2=size=72x72:rate=30" -frames:v 16 -pix_fmt yuv420p10le -frame-parallel 1 -c:v libvpx-vp9 -profile:v 2 -auto-alt-ref 0 -lag-in-frames 0 -b:v 15k oddsize_72x72_p2.ivf
+ffmpeg -v error -y -f lavfi -i "testsrc2=size=10x10:rate=30" -frames:v 10 -pix_fmt yuv420p -frame-parallel 1 -c:v libvpx-vp9 -auto-alt-ref 0 -lag-in-frames 0 -b:v 3M -cpu-used 1 oddsize_10x10.ivf
+ffmpeg -v error -y -f lavfi -i "testsrc2=size=10x10:rate=30" -frames:v 10 -pix_fmt yuv420p10le -frame-parallel 1 -c:v libvpx-vp9 -profile:v 2 -auto-alt-ref 0 -lag-in-frames 0 -b:v 3M -cpu-used 1 oddsize_10x10_p2.ivf

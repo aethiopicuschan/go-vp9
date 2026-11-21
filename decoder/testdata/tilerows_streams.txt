@@ -1,0 +1,43 @@
+Tile-row regression streams (ffmpeg + libvpx-vp9 encoder), used by decoder/tilerows_stream_test.go.
+All: 4:2:0, error_resilient=0, lavfi testsrc2; profile 0 8-bit unless the name contains _p2 (profile 2, 10-bit).
+NAME.md5: one md5 per shown frame (Y then U then V; 16-bit little-endian samples for _p2) of the reference decode
+    ffmpeg -v error -c:v libvpx-vp9 -i NAME.ivf -pix_fmt PIXFMT -f rawvideo NAME.yuv
+One shown frame per IVF packet (hidden alt-refs live inside superframes).
+
+-threads 1 matters: with the default thread count this ffmpeg/libvpx build writes tile_rows_log2=0 as soon as
+-tile-columns > 0 (the streams then decode fine and test nothing). Check the result with
+    ffmpeg -v trace -i NAME.ivf -c copy -bsf:v trace_headers -f null - 2>&1 | grep -E 'tile_(cols|rows)_log2'
+
+Every stream is a two-pass encode:
+    ffmpeg -y -v error -f lavfi -i SRC -frames:v N -c:v libvpx-vp9 -pix_fmt PIXFMT OPTS -pass 1 -passlogfile L -f null -
+    ffmpeg -y -v error -f lavfi -i SRC -frames:v N -c:v libvpx-vp9 -pix_fmt PIXFMT OPTS -pass 2 -passlogfile L NAME.ivf
+
+AR="-auto-alt-ref 1 -lag-in-frames 16 -arnr-maxframes 7 -g 60"
+NA="-auto-alt-ref 0 -lag-in-frames 0"
+
+# NAME (bytes; tile rows x cols)                SRC                              N   PIXFMT       OPTS
+tilerows_r1c0_fp0        (1135; 2x1)            testsrc2=size=256x256:rate=30    4   yuv420p      -tile-rows 1 -tile-columns 0 -threads 1 -frame-parallel 0 $NA -b:v 60k
+tilerows_r2c1_fp1        (1887; 4x2)            testsrc2=size=512x512:rate=30    4   yuv420p      -tile-rows 2 -tile-columns 1 -threads 1 -frame-parallel 1 $NA -b:v 80k
+tilerows_r1c2_altref     (9877; 2x4)            testsrc2=size=1024x576:rate=30   18  yuv420p      -tile-rows 1 -tile-columns 2 -threads 1 -frame-parallel 0 $AR -b:v 120k
+tilerows_r2c1_640x384    (1946; 4x2)            testsrc2=size=640x384:rate=30    4   yuv420p      -tile-rows 2 -tile-columns 1 -threads 1 -frame-parallel 0 $NA -b:v 80k
+tilerows_r1c1_p2         (1575; 2x2)            testsrc2=size=512x288:rate=30    4   yuv420p10le  -profile:v 2 -tile-rows 1 -tile-columns 1 -threads 1 -frame-parallel 0 $NA -b:v 80k
+tilerows_r2c0_altref_p2  (5063; 4x1)            testsrc2=size=320x384:rate=30    18  yuv420p10le  -profile:v 2 -tile-rows 2 -tile-columns 0 -threads 1 -frame-parallel 1 $AR -b:v 60k
+
+Notes
+  - tilerows_r1c2_altref and tilerows_r2c0_altref_p2: 18 shown / 20 coded frames (2 hidden alt-refs, frame_context_idx 1).
+  - tilerows_r2c1_640x384: 6 superblock rows in 4 tile rows -> tile rows of 1, 2, 1, 2 superblock rows (get_tile_offset).
+  - At 14ee559 (before the fix) all six fail on packet 0 with "vp9/decoder: entropy desync (bitstream over-read)";
+    after it all six are bit-exact. The fix has three parts (each in decoder.go and decoder16.go), each needed by all
+    six streams: reverting the above-context reset or MiRowStart gives the same over-read error on packet 0, reverting
+    TileRowStart4 (intra edge availability) decodes without error but every frame differs from libvpx.
+
+tilerows_corrupt.tsv
+  libvpx's verdict on corrupted copies of packet 0 (the key frame, decoded on its own) of tilerows_r2c1_640x384
+  (8 tiles) and tilerows_r1c1_p2 (4 tiles): per tile the 4-byte size field rewritten (0, size-1, size+1, size/2,
+  bytes left in the packet, that + 1, 0xffffffff), the first byte's top bit set (bool-decoder marker), the second
+  half zeroed, the last 1/2/3 bytes zeroed, one bit flipped mid-tile; plus the packet truncated.
+  Columns: stream, variant, verdict (OK/ERR), md5 of `vpxdec --i420` output for OK rows, libvpx "Additional
+  information" message. Regenerate:
+      mkdir D && TILEROWS_DUMP=D go test ./decoder -run TestTileRowCorrupt -count=1    # writes D/STREAM.VARIANT.ivf
+      for each file: vpxdec --i420 -o out.yuv D/STREAM.VARIANT.ivf                     # rc != 0 or no output -> ERR
+  (vpxdec built from libvpx, single thread.) 166 rows: 153 ERR, 13 OK; this decoder matches all of them.

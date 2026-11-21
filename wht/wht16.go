@@ -19,12 +19,13 @@ func IWHT4x4_16(c []int64) {
 		c[r*4+3] = d
 	}
 
-	// Column pass: rows are in sequential order after the row pass.
+	// Column pass: same input mapping as the row pass (libvpx a1,c1,d1,b1 =
+	// ip[0],ip[4],ip[8],ip[12]), i.e. b comes from row 3.
 	for col := 0; col < 4; col++ {
 		a := c[0*4+col]
-		b := c[1*4+col]
-		cc := c[2*4+col]
-		d := c[3*4+col]
+		b := c[3*4+col]
+		cc := c[1*4+col]
+		d := c[2*4+col]
 
 		a, b, cc, d = iwht4_64(a, b, cc, d)
 

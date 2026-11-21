@@ -20,10 +20,55 @@ func TestNewFrameSize(t *testing.T) {
 }
 
 func TestNewFrameOddDims(t *testing.T) {
+	// Width/Height keep the true (odd) size; the planes are allocated for the
+	// even-rounded size and chroma is ceil(size/2).
 	f := NewFrame(7, 5)
-	// Should be rounded up to 8×6.
-	if f.Width != 8 || f.Height != 6 {
-		t.Fatalf("odd dims not rounded: got %dx%d", f.Width, f.Height)
+	if f.Width != 7 || f.Height != 5 {
+		t.Fatalf("odd dims changed: got %dx%d", f.Width, f.Height)
+	}
+	if f.UVWidth() != 4 || f.UVHeight() != 3 {
+		t.Fatalf("chroma dims: got %dx%d, want 4x3", f.UVWidth(), f.UVHeight())
+	}
+	if f.YStride != 8+2*BORDER || len(f.Y) != (6+2*BORDER)*f.YStride {
+		t.Fatalf("luma allocation: stride %d len %d", f.YStride, len(f.Y))
+	}
+	g := NewFrame16SS(7, 5, 10, 1, 0)
+	if g.Width != 7 || g.Height != 5 || g.UVWidth() != 4 || g.UVHeight() != 5 {
+		t.Fatalf("4:2:2 odd dims: %dx%d chroma %dx%d", g.Width, g.Height, g.UVWidth(), g.UVHeight())
+	}
+}
+
+// Borders are replicated from the true picture edge, also across the extra
+// column/row an odd size leaves in the even-rounded allocation (libvpx extends
+// references from y_crop_width / y_crop_height).
+func TestExtendBordersOddDims(t *testing.T) {
+	f := NewFrame(5, 3)
+	base := f.YBase()
+	for r := 0; r < 4; r++ { // includes the row/column past the picture
+		for c := 0; c < 6; c++ {
+			f.Y[base+r*f.YStride+c] = byte(r*10 + c + 1)
+		}
+	}
+	ExtendBorders(f)
+	for r := -BORDER; r < 4+BORDER; r++ {
+		sr := r
+		if sr < 0 {
+			sr = 0
+		} else if sr > 2 {
+			sr = 2
+		}
+		for c := 5; c < 6+BORDER; c++ {
+			if got, want := f.Y[base+r*f.YStride+c], byte(sr*10+5); got != want {
+				t.Fatalf("Y[%d][%d] = %d, want %d", r, c, got, want)
+			}
+		}
+	}
+	for c := 0; c < 5; c++ {
+		for r := 3; r < 4+BORDER; r++ {
+			if got, want := f.Y[base+r*f.YStride+c], byte(20+c+1); got != want {
+				t.Fatalf("Y[%d][%d] = %d, want %d", r, c, got, want)
+			}
+		}
 	}
 }
 

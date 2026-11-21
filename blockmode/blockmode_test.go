@@ -9,9 +9,14 @@ import (
 	"github.com/aethiopicuschan/go-vp9/modeinfo"
 )
 
-// encodeIntraBlock writes a minimal intra block bit sequence with prob=128:
-// skip(1 bit) + Y-mode tree (up to 9 bits) + UV-mode tree.
-// Returns bytes and the expected skip/yMode/uvMode.
+// encodeIntraBlock writes a minimal key-frame intra block bit sequence:
+// skip (prob 128, the NewProbs value) + Y-mode tree + UV-mode tree.
+//
+// Key (and intra-only) frames do not read the modes with the frame context:
+// Decode uses the fixed tables KFYModeProbs[above][left] (DC/DC for a block
+// with no neighbours) and KFUVModeProbs[yMode] (libvpx
+// read_intra_frame_mode_info), so the tree bits must be written with exactly
+// those probabilities — not with 128.
 func encodeIntraBlock(skip bool, yMode, uvMode modeinfo.IntraMode) []byte {
 	w := boolcoder.NewWriter()
 	if skip {
@@ -19,44 +24,25 @@ func encodeIntraBlock(skip bool, yMode, uvMode modeinfo.IntraMode) []byte {
 	} else {
 		w.WriteBool(128, 0)
 	}
-	// Y mode tree with all probs=128: write the path through intraModeTree.
-	// intraModeTree: root→ -DC(0)/2; node2→ -TM(9)/4; node4→ -V(1)/6;
-	//               node6→ {8,12}; node8→ -H(2)/10; node10→ -D135/−D117;
-	//               node12→ -D45/14; node14→ -D63/16; node16→ -D153/−D207
-	writeMode := func(mode modeinfo.IntraMode) {
-		switch mode {
-		case modeinfo.DC: // 0→leaf
-			w.WriteBool(128, 0)
-		case modeinfo.TM: // 1→0→leaf
-			w.WriteBool(128, 1)
-			w.WriteBool(128, 0)
-		case modeinfo.V: // 1→1→0→leaf
-			w.WriteBool(128, 1)
-			w.WriteBool(128, 1)
-			w.WriteBool(128, 0)
-		case modeinfo.H: // 1→1→1→0→0→leaf
-			w.WriteBool(128, 1)
-			w.WriteBool(128, 1)
-			w.WriteBool(128, 1)
-			w.WriteBool(128, 0)
-			w.WriteBool(128, 0)
-		case modeinfo.D135: // 1→1→1→0→1→0→leaf
-			w.WriteBool(128, 1)
-			w.WriteBool(128, 1)
-			w.WriteBool(128, 1)
-			w.WriteBool(128, 0)
-			w.WriteBool(128, 1)
-			w.WriteBool(128, 0)
-		case modeinfo.D45: // 1→1→1→1→0→leaf
-			w.WriteBool(128, 1)
-			w.WriteBool(128, 1)
-			w.WriteBool(128, 1)
-			w.WriteBool(128, 1)
-			w.WriteBool(128, 0)
+	// Paths through intraModeTree as {probability index (= node/2), bit}:
+	// root→ -DC(0)/2; node2→ -TM(9)/4; node4→ -V(1)/6; node6→ {8,12};
+	// node8→ -H(2)/10; node10→ -D135/-D117; node12→ -D45/14;
+	// node14→ -D63/16; node16→ -D153/-D207.
+	paths := map[modeinfo.IntraMode][][2]int{
+		modeinfo.DC:   {{0, 0}},
+		modeinfo.TM:   {{0, 1}, {1, 0}},
+		modeinfo.V:    {{0, 1}, {1, 1}, {2, 0}},
+		modeinfo.H:    {{0, 1}, {1, 1}, {2, 1}, {3, 0}, {4, 0}},
+		modeinfo.D135: {{0, 1}, {1, 1}, {2, 1}, {3, 0}, {4, 1}, {5, 0}},
+		modeinfo.D45:  {{0, 1}, {1, 1}, {2, 1}, {3, 1}, {6, 0}},
+	}
+	writeMode := func(mode modeinfo.IntraMode, probs [9]uint8) {
+		for _, pb := range paths[mode] {
+			w.WriteBool(probs[pb[0]], pb[1])
 		}
 	}
-	writeMode(yMode)
-	writeMode(uvMode)
+	writeMode(yMode, modeinfo.KFYModeProbs[modeinfo.DC][modeinfo.DC])
+	writeMode(uvMode, modeinfo.KFUVModeProbs[yMode])
 	return w.Bytes()
 }
 
@@ -124,21 +110,32 @@ func TestDecodeYModeDC(t *testing.T) {
 }
 
 func TestDecodeYModeV(t *testing.T) {
-	probs := compheader.NewProbs()
-	probs.TxMode = compheader.TxModeOnly4x4
-	fi := newKeyframeInfo()
-
-	data := encodeIntraBlock(false, modeinfo.V, modeinfo.H)
-	br := boolcoder.NewReader(data)
-	row := ctx.NewRow(64)
-	col := ctx.NewCol(16)
-
-	bm := Decode(br, probs, nil, fi, row, col, 0, 0, 2, 2, Sub8x8None, nil, nil)
-	if bm.YMode != modeinfo.V {
-		t.Fatalf("YMode: got %v, want V", bm.YMode)
+	// Non-DC modes on both planes: fails unless writer and Decode agree on the
+	// key-frame probability tables for every tree node on the path.
+	cases := []struct{ y, uv modeinfo.IntraMode }{
+		{modeinfo.V, modeinfo.H},
+		{modeinfo.TM, modeinfo.D45},
+		{modeinfo.H, modeinfo.D135},
+		{modeinfo.D135, modeinfo.V},
+		{modeinfo.D45, modeinfo.TM},
 	}
-	if bm.UVMode != modeinfo.H {
-		t.Fatalf("UVMode: got %v, want H", bm.UVMode)
+	for _, c := range cases {
+		probs := compheader.NewProbs()
+		probs.TxMode = compheader.TxModeOnly4x4
+		fi := newKeyframeInfo()
+
+		data := encodeIntraBlock(false, c.y, c.uv)
+		br := boolcoder.NewReader(data)
+		row := ctx.NewRow(64)
+		col := ctx.NewCol(16)
+
+		bm := Decode(br, probs, nil, fi, row, col, 0, 0, 2, 2, Sub8x8None, nil, nil)
+		if bm.YMode != c.y {
+			t.Fatalf("YMode: got %v, want %v", bm.YMode, c.y)
+		}
+		if bm.UVMode != c.uv {
+			t.Fatalf("UVMode: got %v, want %v (y=%v)", bm.UVMode, c.uv, c.y)
+		}
 	}
 }
 

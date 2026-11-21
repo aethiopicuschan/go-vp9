@@ -1,0 +1,31 @@
+Lossless VP9 regression streams (ffmpeg + libvpx-vp9 encoder, `-lossless 1`: base_q_idx=0, all delta_q=0,
+loop_filter_level=0). All 4:2:0, error_resilient=0, one shown frame per IVF packet, first frame key, rest inter.
+Profile 0 8-bit unless the name ends in _p2 (profile 2, 10-bit) or _p2_12bit (profile 2, 12-bit).
+lossless_NAME.md5: one md5 per shown frame (w*h*3/2 samples, Y then U then V; 16-bit little-endian samples for _p2*).
+Reference: ffmpeg -v error -c:v libvpx-vp9 -i NAME.ivf -pix_fmt PIXFMT -f rawvideo NAME.yuv   (PIXFMT = the encode's -pix_fmt)
+
+Before the lossless fixes (commit 14ee559) every stream below failed: wrong pixels from frame 0, or
+"entropy desync (bitstream over-read)" (72x40: at packet 3 after 3 wrong frames; bars: at packet 0). All pass after.
+
+N="-auto-alt-ref 0 -lag-in-frames 0"
+
+# lossless_64x64_fp0.ivf (4247 B, 3 frames)
+ffmpeg -f lavfi -i testsrc2=size=64x64:rate=30 -frames:v 3 -c:v libvpx-vp9 -lossless 1 -pix_fmt yuv420p -frame-parallel 0 $N lossless_64x64_fp0.ivf
+# lossless_64x64_fp1.ivf (4234 B, 3 frames)
+ffmpeg -f lavfi -i testsrc2=size=64x64:rate=30 -frames:v 3 -c:v libvpx-vp9 -lossless 1 -pix_fmt yuv420p -frame-parallel 1 $N lossless_64x64_fp1.ivf
+# lossless_160x96_fp0.ivf (8344 B, 3 frames)
+ffmpeg -f lavfi -i testsrc2=size=160x96:rate=30 -frames:v 3 -c:v libvpx-vp9 -lossless 1 -pix_fmt yuv420p -frame-parallel 0 $N lossless_160x96_fp0.ivf
+# lossless_160x96_fp1.ivf (8307 B, 3 frames)
+ffmpeg -f lavfi -i testsrc2=size=160x96:rate=30 -frames:v 3 -c:v libvpx-vp9 -lossless 1 -pix_fmt yuv420p -frame-parallel 1 $N lossless_160x96_fp1.ivf
+# lossless_72x40_fp0.ivf (1792 B, 6 frames)
+ffmpeg -f lavfi -i testsrc2=size=72x40:rate=30 -frames:v 6 -c:v libvpx-vp9 -lossless 1 -pix_fmt yuv420p -frame-parallel 0 $N lossless_72x40_fp0.ivf
+# lossless_bars_320x192_fp0.ivf (446 B, 4 frames, static colour bars: mostly skipped blocks)
+ffmpeg -f lavfi -i smptebars=size=320x192:rate=30 -frames:v 4 -c:v libvpx-vp9 -lossless 1 -pix_fmt yuv420p -frame-parallel 0 $N lossless_bars_320x192_fp0.ivf
+# lossless_64x64_fp0_p2.ivf (5670 B, 3 frames, 10-bit)
+ffmpeg -f lavfi -i testsrc2=size=64x64:rate=30 -frames:v 3 -c:v libvpx-vp9 -lossless 1 -pix_fmt yuv420p10le -profile:v 2 -frame-parallel 0 $N lossless_64x64_fp0_p2.ivf
+# lossless_160x96_fp1_p2.ivf (11894 B, 3 frames, 10-bit)
+ffmpeg -f lavfi -i testsrc2=size=160x96:rate=30 -frames:v 3 -c:v libvpx-vp9 -lossless 1 -pix_fmt yuv420p10le -profile:v 2 -frame-parallel 1 $N lossless_160x96_fp1_p2.ivf
+# lossless_bars_320x192_fp1_p2.ivf (492 B, 4 frames, 10-bit)
+ffmpeg -f lavfi -i smptebars=size=320x192:rate=30 -frames:v 4 -c:v libvpx-vp9 -lossless 1 -pix_fmt yuv420p10le -profile:v 2 -frame-parallel 1 $N lossless_bars_320x192_fp1_p2.ivf
+# lossless_64x64_fp0_p2_12bit.ivf (7344 B, 3 frames, 12-bit)
+ffmpeg -f lavfi -i testsrc2=size=64x64:rate=30 -frames:v 3 -c:v libvpx-vp9 -lossless 1 -pix_fmt yuv420p12le -profile:v 2 -frame-parallel 0 $N lossless_64x64_fp0_p2_12bit.ivf

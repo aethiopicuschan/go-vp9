@@ -32,6 +32,14 @@ type Reader struct {
 	bitsAvl int    // real (buffer) bits currently held in value, top byte included; negative = zero-fill bits already shifted out
 	marker  bool   // NewReaderVP9: the leading marker bit was 1 (libvpx init error)
 
+	// Shadow of libvpx's lazy fill schedule (vpx_reader.count / .buffer), kept
+	// only so FindEnd can reproduce vpx_reader_find_end. vpxCount is libvpx's
+	// `count` while data remains; vpxPos its `buffer` as an offset into buf.
+	// Once a fill has loaded the last byte (libvpx adds LOTS_OF_BITS to count)
+	// vpxCount is parked at vpxExhausted and never consulted again.
+	vpxCount int
+	vpxPos   int
+
 	// optional tracing (debug only)
 	traceN     int
 	traceF     TraceFunc
@@ -40,9 +48,57 @@ type Reader struct {
 
 // NewReader initialises a boolean decoder over buf.
 func NewReader(buf []byte) *Reader {
-	r := &Reader{buf: buf, rng: 255}
+	r := &Reader{buf: buf, rng: 255, vpxCount: -8}
 	r.fill()
+	r.vpxFill()
 	return r
+}
+
+// vpxExhausted parks vpxCount after libvpx's fill has consumed the whole
+// buffer (stands in for count + LOTS_OF_BITS; any value that renormalisation
+// shifts cannot bring below zero or into find_end's rewind range works).
+const vpxExhausted = 1 << 62
+
+// vpxFill mirrors the bookkeeping of libvpx vpx_reader_fill (no data is moved,
+// the real window is maintained by fill): called when count < 0, it loads as
+// many whole bytes as fit into the 64-bit register, or everything that is left.
+func (r *Reader) vpxFill() {
+	shift := 48 - r.vpxCount // BD_VALUE_SIZE - CHAR_BIT - (count + CHAR_BIT)
+	left := len(r.buf) - r.vpxPos
+	if left <= 8 && shift+8 >= left*8 {
+		r.vpxPos = len(r.buf)
+		r.vpxCount = vpxExhausted
+		return
+	}
+	n := shift>>3 + 1
+	r.vpxPos += n
+	r.vpxCount += 8 * n
+}
+
+// FindEnd returns the offset in the reader's buffer at which libvpx considers
+// the coded data to end: vpx_reader_find_end (vpx_dsp/bitreader.c),
+//
+//	while (r->count > CHAR_BIT && r->count < BD_VALUE_SIZE) {
+//	  r->count -= CHAR_BIT;
+//	  r->buffer--;
+//	}
+//	return r->buffer;
+//
+// i.e. the read pointer with the look-ahead bytes that were loaded into the
+// register but not needed given back. The VP9 decoder uses the value of the
+// frame's last tile as the end of the frame (vp9_decodeframe.c decode_tiles);
+// vp9_dx_iface.c then treats what follows in the packet as another frame.
+// When the register has already swallowed the last byte of the buffer the
+// result is len(buf), whatever was consumed. The result depends on libvpx's
+// lazy refill schedule (a refill happens at the start of the read that finds
+// count < 0), which is why it is tracked rather than derived from BitPos.
+func (r *Reader) FindEnd() int {
+	c, p := r.vpxCount, r.vpxPos
+	for c > 8 && c < 64 {
+		c -= 8
+		p--
+	}
+	return p
 }
 
 // NewReaderVP9 initialises a boolean decoder over a real VP9 bitstream partition
@@ -68,6 +124,9 @@ func (r *Reader) fill() {
 
 // ReadBool decodes one boolean with probability prob (1..255 = P(0)*256).
 func (r *Reader) ReadBool(prob uint8) int {
+	if r.vpxCount < 0 {
+		r.vpxFill()
+	}
 	split := 1 + (((r.rng - 1) * uint32(prob)) >> 8)
 	bigSplit := uint64(split) << 56
 	rngBefore := r.rng
@@ -85,6 +144,7 @@ func (r *Reader) ReadBool(prob uint8) int {
 	r.rng <<= shift
 	r.value <<= shift
 	r.bitsAvl -= int(shift)
+	r.vpxCount -= int(shift)
 	if r.bitsAvl <= 56 {
 		r.fill()
 	}

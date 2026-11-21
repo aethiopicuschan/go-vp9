@@ -14,6 +14,9 @@ type Reader struct {
 	tiles [][]byte
 	nCols int
 	nRows int
+	// lastOff is the offset in the frame payload at which the last tile's
+	// data starts (len(payload) when the tile data is cut short before it).
+	lastOff int
 }
 
 // NewReader parses the tile data from payload.
@@ -40,6 +43,7 @@ func NewReader(payload []byte, uncompHdrBytes, compHdrBytes, tileColsLog2, tileR
 	numTiles := nCols * nRows
 
 	tiles := make([][]byte, numTiles)
+	lastOff := len(payload)
 	pos := 0
 	for i := 0; i < numTiles; i++ {
 		last := i == numTiles-1
@@ -49,6 +53,7 @@ func NewReader(payload []byte, uncompHdrBytes, compHdrBytes, tileColsLog2, tileR
 				break
 			}
 			tiles[i] = data[pos:]
+			lastOff = tileStart + pos
 		} else {
 			// 4-byte big-endian tile size (exact byte count, no +1 adjustment).
 			if pos+4 > len(data) {
@@ -65,7 +70,7 @@ func NewReader(payload []byte, uncompHdrBytes, compHdrBytes, tileColsLog2, tileR
 			pos += sz
 		}
 	}
-	return &Reader{tiles: tiles, nCols: nCols, nRows: nRows}, nil
+	return &Reader{tiles: tiles, nCols: nCols, nRows: nRows, lastOff: lastOff}, nil
 }
 
 // NumCols returns the number of tile columns.
@@ -73,6 +78,11 @@ func (r *Reader) NumCols() int { return r.nCols }
 
 // NumRows returns the number of tile rows.
 func (r *Reader) NumRows() int { return r.nRows }
+
+// LastTileOffset returns the offset in the frame payload of the last tile's
+// data, so that an end position inside that tile (boolcoder.Reader.FindEnd)
+// can be turned into the end of the frame.
+func (r *Reader) LastTileOffset() int { return r.lastOff }
 
 // TileData returns the raw byte slice for tile at (row, col).
 // The caller passes these bytes to boolcoder.NewReader to decode the tile.

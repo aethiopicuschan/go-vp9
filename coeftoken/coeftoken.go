@@ -232,8 +232,16 @@ func readCoeffExtra(br *boolcoder.Reader, probs []uint8) int {
 //	initCtx   – context for position 0 (0/1/2 from above/left nonzero context)
 //
 // All-zero return means EOB at position 0.
-func DecodeBlock(br *boolcoder.Reader, txSize, planeType, refType int,
-	scan, nb []int16, initCtx int, probs *CoefProbs, counts *compheader.Counts) []int16 {
+//
+// eob is the number of scan positions covered by tokens (libvpx decode_coefs
+// return value; 0 = the block starts with an EOB token). libvpx derives the
+// above/left entropy context of a transform block from it (eob > 0), not from
+// the coefficient values - the two differ for a block whose tokens are all
+// ZERO up to its last position - and sums the eobs of an inter block to detect
+// "no coefficients at all". It is returned, not kept in package state, so
+// that decoders do not share it.
+func DecodeBlockEOB(br *boolcoder.Reader, txSize, planeType, refType int,
+	scan, nb []int16, initCtx int, probs *CoefProbs, counts *compheader.Counts) (coeffs []int16, eob int) {
 
 	n := nCoefs(txSize)
 	out := make([]int16, n)
@@ -278,7 +286,10 @@ func DecodeBlock(br *boolcoder.Reader, txSize, planeType, refType int,
 			tokenCache[scan[c]] = 0
 			c++
 			if c >= n {
-				return out
+				// Zero tokens up to the end of the block: no coefficient is
+				// non-zero, yet eob is n (libvpx: "zero tokens at the end (no
+				// eob token)").
+				return out, c
 			}
 			ctx = getCoefContext(nb, tokenCache, c)
 			bd = int(band(txSize, c))
@@ -357,5 +368,12 @@ func DecodeBlock(br *boolcoder.Reader, txSize, planeType, refType int,
 			ctx = getCoefContext(nb, tokenCache, c)
 		}
 	}
+	return out, c
+}
+
+// DecodeBlock is DecodeBlockEOB without the eob.
+func DecodeBlock(br *boolcoder.Reader, txSize, planeType, refType int,
+	scan, nb []int16, initCtx int, probs *CoefProbs, counts *compheader.Counts) []int16 {
+	out, _ := DecodeBlockEOB(br, txSize, planeType, refType, scan, nb, initCtx, probs, counts)
 	return out
 }

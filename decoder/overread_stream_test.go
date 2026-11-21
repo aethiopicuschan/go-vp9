@@ -47,13 +47,13 @@ var overreadKnownDivergence = map[string]string{
 	// Only the verdict is checked.
 	"tiles2_key.ivf/ff_first_half_0":    "pixels",
 	"tiles2_key_p2.ivf/ff_first_half_0": "pixels",
-	// libvpx rejects this one with "Invalid frame marker", not with an
-	// over-read: the garbage tile ends EARLY, and vp9_dx_iface.c decoder_decode
-	// then parses the non-zero bytes left behind the last tile's bool decoder
-	// (vpx_reader_find_end) as a further frame. That under-read rule is not
-	// implemented here, so this decoder accepts the frame.
-	"tiles2_key_p2.ivf/ff_last_805": "verdict",
 }
+
+// One row deserves a note: libvpx rejects tiles2_key_p2.ivf/ff_last_805 with
+// "Invalid frame marker", not with an over-read. The garbage tile ends EARLY,
+// and vp9_dx_iface.c decoder_decode then parses the non-zero bytes left behind
+// the last tile's bool decoder (vpx_reader_find_end) as a further frame. The
+// decoder follows that rule (decodePacket, boolcoder.Reader.FindEnd).
 
 // Byte sizes of the two tiles in each stream (first, last).
 var overreadTileSizes = map[string][2]int{
@@ -104,13 +104,7 @@ func TestCorruptTilesMatchLibvpxVerdict(t *testing.T) {
 			sizes := overreadTileSizes[stream]
 			p := corruptTwoTilePacket(t, pay, sizes[0], sizes[1], op, arg)
 			gotMD5, derr := decodeToMD5(stream, p)
-			switch overreadKnownDivergence[name] {
-			case "verdict":
-				if derr != nil && strings.HasPrefix(derr.Error(), "panic") {
-					t.Fatal(derr)
-				}
-				t.Skipf("known divergence: libvpx %s (%s), this decoder err=%v", verdict, vpxMsg, derr)
-			case "pixels":
+			if overreadKnownDivergence[name] == "pixels" {
 				gotMD5 = wantMD5
 			}
 			switch verdict {
@@ -182,13 +176,9 @@ func corruptTwoTilePacket(t *testing.T, pay []byte, size0, size1 int, op string,
 
 // decodeToMD5 decodes one packet with a fresh decoder and returns the md5 of
 // the visible I420 planes in vpxdec --i420 layout (16-bit little-endian
-// samples for the high-bitdepth stream).
+// samples for the high-bitdepth stream). A panic is not recovered: on corrupt
+// input the decoder must return an error, and a panic fails the test.
 func decodeToMD5(stream string, packet []byte) (sum string, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("panic: %v", r)
-		}
-	}()
 	h := md5.New()
 	d := New()
 	if strings.HasSuffix(stream, "_p2.ivf") {

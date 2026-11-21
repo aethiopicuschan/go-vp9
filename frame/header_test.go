@@ -241,16 +241,21 @@ func buildKeyFrameWithQ(baseQ, deltaYDC, deltaUVDC, deltaUVAC int) []byte {
 
 	// quantization_params
 	bw.writeBits(8, uint32(baseQ))
-	// writeDeltaQ: 1-bit flag + su(4) = 4-bit 2's complement signed int (spec §7.2.9).
+	// writeDeltaQ: 1-bit flag, then a 4-bit magnitude and a sign bit (libvpx
+	// vpx_rb_read_signed_literal(rb, 4)): range [-15, 15].
 	writeDeltaQ := func(v int) {
 		if v == 0 {
 			bw.writeBit(0)
 			return
 		}
 		bw.writeBit(1)
-		// Encode as 4-bit 2's complement: range [-8, 7].
-		bits := uint32(v & 0xF)
-		bw.writeBits(4, bits)
+		if v < 0 {
+			bw.writeBits(4, uint32(-v))
+			bw.writeBit(1)
+		} else {
+			bw.writeBits(4, uint32(v))
+			bw.writeBit(0)
+		}
 	}
 	writeDeltaQ(deltaYDC)
 	writeDeltaQ(deltaUVDC)
@@ -274,6 +279,8 @@ func TestDeltaQParsing(t *testing.T) {
 		{80, -3, 0, 0},
 		{64, 0, 5, -2},
 		{128, 7, -7, 4},
+		{128, -15, 15, 9},
+		{40, 8, -8, -1},
 	}
 	for _, tc := range cases {
 		payload := buildKeyFrameWithQ(tc.baseQ, tc.yDC, tc.uvDC, tc.uvAC)

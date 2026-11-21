@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+# Header edits for the integ_* streams, on top of the bit-level editor
+# intraonly_vp9hdr.py (same directory). Payload after the uncompressed header
+# is copied verbatim.
+#
+# usage: integ_hdredit.py deltaq IN.ivf OUT.ivf Y_DC UV_DC UV_AC
+#   Code delta_q_y_dc / uv_dc / uv_ac (each -15..15) in the first packet's
+#   frame header: delta_coded=1 followed by a 4-bit magnitude and a sign bit.
+# usage: integ_hdredit.py trunc IN.ivf OUT.ivf PKT N
+#   Cut IVF packet PKT to its first N bytes.
+# usage: integ_hdredit.py xor IN.ivf OUT.ivf PKT OFFSET MASK
+#   XOR byte OFFSET of IVF packet PKT with MASK (hex).
+import importlib.util, os, sys
+
+spec = importlib.util.spec_from_file_location(
+    'vp9hdr', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'intraonly_vp9hdr.py'))
+vp9hdr = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(vp9hdr)
+
+
+def deltaq(frame, vals):
+    h = vp9hdr.Hdr(frame)
+    out = []
+    names = dict(zip(('y_dc', 'uv_dc', 'uv_ac'), vals))
+    for e in h.f:
+        if e[0].startswith('delta_q_'):
+            continue
+        if e[0].startswith('delta_coded_'):
+            v = names[e[0][len('delta_coded_'):]]
+            out.append([e[0], 1, 1])
+            out.append(['delta_q_' + e[0][len('delta_coded_'):], 5, (abs(v) << 1) | (1 if v < 0 else 0)])
+            continue
+        out.append(e)
+    h.f = out
+    return h.bytes()
+
+
+if __name__ == '__main__':
+    if sys.argv[1] == 'deltaq':
+        hdr, pkts = vp9hdr.frames_of(sys.argv[2])
+        pkts[0] = deltaq(pkts[0], [int(x) for x in sys.argv[4:7]])
+        vp9hdr.write_ivf(sys.argv[3], hdr, pkts)
+    elif sys.argv[1] == 'trunc':
+        hdr, pkts = vp9hdr.frames_of(sys.argv[2])
+        k = int(sys.argv[4])
+        pkts[k] = pkts[k][:int(sys.argv[5])]
+        vp9hdr.write_ivf(sys.argv[3], hdr, pkts)
+    elif sys.argv[1] == 'xor':
+        hdr, pkts = vp9hdr.frames_of(sys.argv[2])
+        k, off = int(sys.argv[4]), int(sys.argv[5])
+        b = bytearray(pkts[k])
+        b[off] ^= int(sys.argv[6], 16)
+        pkts[k] = bytes(b)
+        vp9hdr.write_ivf(sys.argv[3], hdr, pkts)
+    else:
+        sys.exit('unknown command')

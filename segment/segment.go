@@ -29,13 +29,15 @@ var FeatureBits = [4]int{8, 6, 2, 0}
 
 // Params holds the resolved segmentation parameters for one block.
 type Params struct {
-	// QIndexDelta is added to (or replaces, when AbsOrDelta=true) the base
-	// quantizer index when FeatAltQ is enabled for this segment.
+	// AltQ: FeatAltQ is enabled for this segment. QIndexDelta is then added to
+	// (or replaces, when AbsOrDelta=true) the base quantizer index.
+	AltQ        bool
 	QIndexDelta int
-	AbsOrDelta  bool // true = QIndexDelta is absolute; false = delta to BaseQIdx
+	AbsOrDelta  bool // true = feature data is absolute; false = delta
 
-	// LFDelta is added to the frame-level loop-filter level when FeatAltLF
-	// is enabled for this segment.
+	// AltLF: FeatAltLF is enabled for this segment. LFDelta is then added to
+	// (or replaces, when AbsOrDelta=true) the frame-level loop-filter level.
+	AltLF   bool
 	LFDelta int
 
 	// RefFrame is the forced reference frame when FeatRefFrame is enabled.
@@ -47,25 +49,19 @@ type Params struct {
 }
 
 // DecodeSegID decodes a segment ID from the bool coder using the 7 segment tree
-// probabilities (spec §8.3.3).
+// probabilities (spec §8.3.3, libvpx vp9_segment_tree).
 //
-// The segment tree is a balanced binary tree of depth 3, producing values 0..7:
+// The tree is a balanced binary tree of depth 3 whose nodes are numbered
+// breadth-first, so the probabilities are laid out level by level:
 //
-//	probs[0]: 0 → left half  (0..3)
-//	          1 → right half (4..7)
-//	probs[1/4]: further split
-//	probs[2/3/5/6]: leaf selection
+//	probs[0]:    0 → 0..3, 1 → 4..7
+//	probs[1/2]:  pair within 0..3 / within 4..7
+//	probs[3..6]: leaf within the pair {0,1} {2,3} {4,5} {6,7}
 func DecodeSegID(br *boolcoder.Reader, probs [7]uint8) int {
-	if br.ReadBool(probs[0]) == 0 {
-		if br.ReadBool(probs[1]) == 0 {
-			return br.ReadBool(probs[2])
-		}
-		return 2 + br.ReadBool(probs[3])
-	}
-	if br.ReadBool(probs[4]) == 0 {
-		return 4 + br.ReadBool(probs[5])
-	}
-	return 6 + br.ReadBool(probs[6])
+	b0 := br.ReadBool(probs[0])
+	b1 := br.ReadBool(probs[1+b0])
+	b2 := br.ReadBool(probs[3+2*b0+b1])
+	return 4*b0 + 2*b1 + b2
 }
 
 // ParamsFor returns the resolved Params for the given segment id (0..7).
@@ -80,9 +76,11 @@ func ParamsFor(featEnabled [8][4]bool, featData [8][4]int16, absOrDelta bool, id
 		return p
 	}
 	if featEnabled[id][FeatAltQ] {
+		p.AltQ = true
 		p.QIndexDelta = int(featData[id][FeatAltQ])
 	}
 	if featEnabled[id][FeatAltLF] {
+		p.AltLF = true
 		p.LFDelta = int(featData[id][FeatAltLF])
 	}
 	if featEnabled[id][FeatRefFrame] {
@@ -94,9 +92,14 @@ func ParamsFor(featEnabled [8][4]bool, featData [8][4]int16, absOrDelta bool, id
 	return p
 }
 
-// ClampQIndex returns a valid quantizer index after applying the segment
-// QIndexDelta (or absolute override) to the frame's BaseQIdx.
+// ClampQIndex returns the quantizer index for a segment (libvpx
+// vp9_get_qindex): the frame's BaseQIdx unless FeatAltQ is enabled, in which
+// case the segment's value is applied as a delta or an absolute index and the
+// result clamped to 0..255.
 func ClampQIndex(baseQIdx int, p Params) int {
+	if !p.AltQ {
+		return baseQIdx
+	}
 	q := baseQIdx
 	if p.AbsOrDelta {
 		q = p.QIndexDelta

@@ -55,18 +55,133 @@ type FrameInfo struct {
 	CompVarRef    [2]int // compound "variable" references
 	CompFixedIdx  int    // ref_frame slot for the fixed ref = sign_bias[CompFixedRef]
 
-	// Tile boundary (4×4 units): a neighbour is available for entropy context
-	// only when it lies inside the current tile (libvpx mi_col>mi_col_start).
+	// Neighbour availability bounds (4×4 units). Left is tile-relative (libvpx
+	// left_mi: mi_col > tile->mi_col_start); above is frame-relative (above_mi:
+	// mi_row != 0), so the decoder keeps MiRowStart at 0 for every tile row.
 	MiColStart int
 	MiRowStart int
 
-	// Segmentation state from frame.Header.
+	// Segmentation state. SegEnabled/SegUpdateMap/SegTempUpdate and the
+	// tree/pred probs are this frame's header values; the feature data is the
+	// persistent state (it survives frames that do not recode it).
 	SegEnabled     bool
 	SegUpdateMap   bool
+	SegTempUpdate  bool
 	SegTreeProbs   [7]uint8
+	SegPredProbs   [3]uint8
 	SegFeatEnabled [8][4]bool
 	SegFeatData    [8][4]int16
 	SegAbsOrDelta  bool
+
+	// FrameIsIntra: key frame or intra-only frame (libvpx frame_is_intra_only);
+	// selects read_intra_segment_id over read_inter_segment_id.
+	FrameIsIntra bool
+
+	// Segmentation maps in 8×8 (MI) units, row-major with stride SegMiCols
+	// (libvpx cm->last_frame_seg_map / cm->current_frame_seg_map). SegMapCur is
+	// written by Decode; SegPredFlags holds this frame's per-MI seg_id_predicted
+	// bits. All nil when the caller keeps no maps (unit tests): the predicted
+	// segment id is then 0 and nothing is stored.
+	SegMapPrev   []uint8
+	SegMapCur    []uint8
+	SegPredFlags []bool
+	SegMiCols    int
+	SegMiRows    int
+}
+
+// segFeature reports whether feature f is active for segment id (libvpx
+// segfeature_active: requires segmentation to be enabled on this frame).
+func (fi *FrameInfo) segFeature(id, f int) bool {
+	return fi.SegEnabled && fi.SegFeatEnabled[id][f]
+}
+
+// readSegmentID decodes (or infers) the block's segment id and maintains the
+// current segmentation map (libvpx read_intra_segment_id /
+// read_inter_segment_id). The map area is the block clipped to the frame.
+func readSegmentID(br *boolcoder.Reader, fi *FrameInfo, row4, col4, bsW4, bsH4 int) int {
+	if !fi.SegEnabled {
+		return 0
+	}
+	row8, col8 := row4>>1, col4>>1
+	xMis, yMis := 0, 0
+	haveMap := fi.SegMapCur != nil && row8 < fi.SegMiRows && col8 < fi.SegMiCols
+	if haveMap {
+		xMis, yMis = maxInt(bsW4>>1, 1), maxInt(bsH4>>1, 1)
+		xMis = minInt(xMis, fi.SegMiCols-col8)
+		yMis = minInt(yMis, fi.SegMiRows-row8)
+	}
+	off := row8*fi.SegMiCols + col8
+
+	// dec_get_segment_id: minimum over the block in the previous map.
+	predicted := 0
+	if haveMap && fi.SegMapPrev != nil {
+		predicted = 8
+		for y := 0; y < yMis; y++ {
+			for x := 0; x < xMis; x++ {
+				if v := int(fi.SegMapPrev[off+y*fi.SegMiCols+x]); v < predicted {
+					predicted = v
+				}
+			}
+		}
+		predicted &= 7
+	}
+
+	if !fi.SegUpdateMap {
+		// copy_segment_id: carry the previous map over.
+		for y := 0; y < yMis; y++ {
+			for x := 0; x < xMis; x++ {
+				var v uint8
+				if fi.SegMapPrev != nil {
+					v = fi.SegMapPrev[off+y*fi.SegMiCols+x]
+				}
+				fi.SegMapCur[off+y*fi.SegMiCols+x] = v
+			}
+		}
+		if fi.FrameIsIntra {
+			return 0 // read_intra_segment_id returns 0 here, not the map value
+		}
+		return predicted
+	}
+
+	var id int
+	if !fi.FrameIsIntra && fi.SegTempUpdate {
+		// vp9_get_pred_context_seg_id: above/left seg_id_predicted flags. The
+		// above neighbour is available on any row but the frame's first; the
+		// left one only inside the tile.
+		c := 0
+		if haveMap && fi.SegPredFlags != nil {
+			if row8 > 0 && fi.SegPredFlags[off-fi.SegMiCols] {
+				c++
+			}
+			if col4 > fi.MiColStart && fi.SegPredFlags[off-1] {
+				c++
+			}
+		}
+		pred := br.ReadBool(fi.SegPredProbs[c]) == 1
+		if haveMap && fi.SegPredFlags != nil {
+			// libvpx stores the flag in the block's single MODE_INFO, which
+			// every MI position of the block points at.
+			for y := 0; y < yMis; y++ {
+				for x := 0; x < xMis; x++ {
+					fi.SegPredFlags[off+y*fi.SegMiCols+x] = pred
+				}
+			}
+		}
+		if pred {
+			id = predicted
+		} else {
+			id = segment.DecodeSegID(br, fi.SegTreeProbs)
+		}
+	} else {
+		id = segment.DecodeSegID(br, fi.SegTreeProbs)
+	}
+	// set_segment_id
+	for y := 0; y < yMis; y++ {
+		for x := 0; x < xMis; x++ {
+			fi.SegMapCur[off+y*fi.SegMiCols+x] = uint8(id)
+		}
+	}
+	return id
 }
 
 // CompFixedVarRef computes the compound fixed and variable reference frames
@@ -113,6 +228,23 @@ type BlockMode struct {
 	// Sub-8×8 inter: per-4×4 MV overrides (NumSubMV > 0 when active).
 	SubMV    [4][2]mv.MV
 	NumSubMV int
+
+	// Invalid: the bitstream used the segment SKIP feature on a sub-8×8 inter
+	// block, which libvpx rejects ("Invalid usage of segment feature on small
+	// blocks"). The caller must fail the frame.
+	Invalid bool
+
+	// InvalidMV: a NEWMV motion vector came out of the range libvpx accepts
+	// (is_mv_valid: MV_LOW < component < MV_UPP, i.e. -2^14 < c < 2^14-1).
+	// libvpx marks the frame corrupt (xd->corrupted) and fails it once its
+	// tiles are decoded; the caller must do the same.
+	InvalidMV bool
+}
+
+// mvValid is libvpx is_mv_valid (MV_LOW < component < MV_UPP).
+func mvValid(m mv.MV) bool {
+	const low, upp = -(1 << 14), 1<<14 - 1
+	return int(m.Row) > low && int(m.Row) < upp && int(m.Col) > low && int(m.Col) < upp
 }
 
 // Sub-8×8 partition codes for Decode's sub8x8 parameter. They match
@@ -195,29 +327,41 @@ func Decode(br *boolcoder.Reader, probs *compheader.Probs, counts *compheader.Co
 
 	var bm BlockMode
 
-	// 1. Segment ID.
-	if fi.SegEnabled && fi.SegUpdateMap {
-		bm.SegID = segment.DecodeSegID(br, fi.SegTreeProbs)
-	}
+	// 1. Segment ID (read, temporally predicted, or carried over from the
+	// previous segmentation map).
+	bm.SegID = readSegmentID(br, &fi, row4, col4, bsW4, bsH4)
+	segSkip := fi.segFeature(bm.SegID, segment.FeatSkip)
+	segRef := fi.segFeature(bm.SegID, segment.FeatRefFrame)
 
-	// 2. Skip flag.
+	// 2. Skip flag. The segment SKIP feature implies skip with no bit coded
+	// (libvpx read_skip).
 	skipCtx := ctx.SkipCtx(aboveSkip, leftSkip)
-	skipBit := br.ReadBool(probs.SkipProbs[skipCtx])
-	if counts != nil {
-		counts.SkipProbs[skipCtx][skipBit]++
+	if segSkip {
+		bm.Skip = true
+	} else {
+		skipBit := br.ReadBool(probs.SkipProbs[skipCtx])
+		if counts != nil {
+			counts.SkipProbs[skipCtx][skipBit]++
+		}
+		bm.Skip = skipBit == 1
 	}
-	bm.Skip = skipBit == 1
 
 	// 3. is_inter (inter frames only). Read BEFORE tx_size — VP9 §6.4.7
 	// inter_frame_mode_info: read_is_inter() precedes read_tx_size(), and
 	// tx_size's allow_select depends on the is_inter result.
+	// With the segment REF_FRAME feature the flag is implied by the segment's
+	// reference frame and nothing is coded (libvpx read_is_inter_block).
 	if !fi.IsKeyframe {
-		isInterCtx := ctx.IsInterCtx(hasAbove, hasLeft, aboveInter, leftInter)
-		isInterBit := br.ReadBool(probs.IsInterProbs[isInterCtx])
-		if counts != nil {
-			counts.IsInterProbs[isInterCtx][isInterBit]++
+		if segRef {
+			bm.IsInter = fi.SegFeatData[bm.SegID][segment.FeatRefFrame] != ctx.RefIntra
+		} else {
+			isInterCtx := ctx.IsInterCtx(hasAbove, hasLeft, aboveInter, leftInter)
+			isInterBit := br.ReadBool(probs.IsInterProbs[isInterCtx])
+			if counts != nil {
+				counts.IsInterProbs[isInterCtx][isInterBit]++
+			}
+			bm.IsInter = isInterBit == 1
 		}
-		bm.IsInter = isInterBit == 1
 	}
 	if DbgW != nil && ((row4 == 0 && col4 == 0) || (row4 == 6 && col4 == 2) || (row4 == 6 && col4 == 10) || (row4 == 4 && col4 == 10) || (row4 == 4 && col4 == 12)) {
 		rng, top := br.State()
@@ -358,8 +502,14 @@ func Decode(br *boolcoder.Reader, probs *compheader.Probs, counts *compheader.Co
 		// 6. Inter block. Read order (VP9 §6.4.22 read_inter_block_mode_info):
 		// ref_frames → inter_mode (bsize≥8×8) → interp_filter → MV. For sub-8×8
 		// blocks the per-unit inter modes are read AFTER interp_filter.
-		bm.RefFrame, bm.IsInter = readRefFrames(br, probs, counts, fi,
-			hasAbove, hasLeft, aboveRef, leftRef, aboveInter, leftInter)
+		if segRef {
+			// Segment REF_FRAME feature: single reference, nothing coded
+			// (libvpx read_ref_frames).
+			bm.RefFrame = [2]int{int(fi.SegFeatData[bm.SegID][segment.FeatRefFrame]), ctx.RefIntra}
+		} else {
+			bm.RefFrame, bm.IsInter = readRefFrames(br, probs, counts, fi,
+				hasAbove, hasLeft, aboveRef, leftRef, aboveInter, leftInter)
+		}
 
 		var imCtx int
 		var mvList0, mvList1 [2]mv.MV
@@ -385,7 +535,15 @@ func Decode(br *boolcoder.Reader, probs *compheader.Probs, counts *compheader.Co
 		}
 
 		// 7. Inter prediction mode for whole-block (≥8×8), BEFORE interp_filter.
-		if !isSub8x8 {
+		// The segment SKIP feature forces ZEROMV with no mode coded (and is
+		// not allowed on sub-8×8 blocks).
+		if segSkip {
+			bm.InterMode = ZeroMV
+			if isSub8x8 {
+				bm.Invalid = true
+				return bm
+			}
+		} else if !isSub8x8 {
 			bm.InterMode = int(br.ReadTreeCount(interModeTree, probs.InterModeProbs[imCtx][:], imC))
 		}
 		if DbgW != nil && ((row4 == 0 && col4 == 0) || (row4 == 6 && col4 == 2) || (row4 == 6 && col4 == 10) || (row4 == 4 && col4 == 10)) {
@@ -419,6 +577,7 @@ func Decode(br *boolcoder.Reader, probs *compheader.Probs, counts *compheader.Co
 			compound := bm.RefFrame[1] != ctx.RefIntra
 			lastSubMode := NearestMV
 			var bmi [4][2]mv.MV // resolved per-sub MVs so far (libvpx mi->bmi)
+		sub8x8Loop:
 			for idy := 0; idy < 2; idy += num4x4h {
 				for idx := 0; idx < 2; idx += num4x4w {
 					j := idy*2 + idx
@@ -435,6 +594,12 @@ func Decode(br *boolcoder.Reader, probs *compheader.Probs, counts *compheader.Co
 						if compound {
 							diff1 := mv.ReadMV(br, probs, counts, fi.AllowHP && mv.UseHP(mvList1[0]))
 							smv[1] = mv.MV{Row: mvList1[0].Row + diff1.Row, Col: mvList1[0].Col + diff1.Col}
+						}
+						if !mvValid(smv[0]) || !mvValid(smv[1]) {
+							// libvpx: xd->corrupted |= 1; return (the remaining
+							// sub-blocks are not read).
+							bm.InvalidMV = true
+							break sub8x8Loop
 						}
 					case NearestMV, NearMV:
 						if appendFn != nil {
@@ -473,6 +638,9 @@ func Decode(br *boolcoder.Reader, probs *compheader.Probs, counts *compheader.Co
 			bm.MV[0] = resolveInterMV(br, probs, counts, bm.InterMode, mvList0, fi.AllowHP)
 			if compound {
 				bm.MV[1] = resolveInterMV(br, probs, counts, bm.InterMode, mvList1, fi.AllowHP)
+			}
+			if bm.InterMode == NewMV && (!mvValid(bm.MV[0]) || !mvValid(bm.MV[1])) {
+				bm.InvalidMV = true // libvpx: xd->corrupted |= !assign_mv(...)
 			}
 		}
 	}
@@ -637,6 +805,13 @@ func log2n4(n int) int {
 
 func minInt(a, b int) int {
 	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
 		return a
 	}
 	return b

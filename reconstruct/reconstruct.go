@@ -68,6 +68,10 @@ func scanTypeFor(txType transform.TxType) int {
 
 // TxTypeFor returns the inverse-transform type for the luma plane.
 // Chroma always uses DCT_DCT (call with isInter=true or any value).
+//
+// Callers also pass isInter=true for intra blocks of a lossless frame: there
+// the transform is the WHT and the coefficient scan is the default (DCT_DCT)
+// one regardless of the intra mode (libvpx: (plane || xd->lossless) ? DCT_DCT).
 func TxTypeFor(yMode modeinfo.IntraMode, txSize uint8, isInter bool) transform.TxType {
 	if isInter || txSize >= ctx.TX32x32 {
 		return transform.DCT_DCT
@@ -85,6 +89,42 @@ var DbgW io.Writer
 // both the residual token decode and the reconstruction.
 var MiW4, MiH4 int
 
+// intraFrameSize returns the plane size that bounds intra edge pixels: libvpx
+// build_intra_predictors replicates the last pixel only past the frame
+// BUFFER size (y_width / uv_width = the width aligned up to 8, i.e. the MI
+// grid), not past the visible picture, so decoded pixels between the picture
+// edge and the 8-aligned edge are used as they are. ssX, ssY are the plane
+// subsampling shifts (0,0 luma; the frame's chroma subsampling for U/V:
+// uv_width = aligned_width >> ss_x); w, h are the fallback when no grid is set.
+func intraFrameSize(w, h int, ssX, ssY uint) (int, int) {
+	if MiW4 > 0 && MiH4 > 0 {
+		return MiW4 * 4 >> ssX, MiH4 * 4 >> ssY
+	}
+	return w, h
+}
+
+// eobAcc collects the eobs of one coding block's transform blocks: last is the
+// eob of the block decoded last (its entropy context is eob > 0), total their
+// sum (libvpx decode_block's eobtotal). It lives on Block's stack so that
+// decoders share no eob state.
+type eobAcc struct{ last, total int }
+
+func (e *eobAcc) decode(br *boolcoder.Reader, txSize, planeType, refType int,
+	scan, nb []int16, initCtx int, probs *coeftoken.CoefProbs, counts *compheader.Counts) []int16 {
+	out, eob := coeftoken.DecodeBlockEOB(br, txSize, planeType, refType, scan, nb, initCtx, probs, counts)
+	e.last = eob
+	e.total += eob
+	return out
+}
+
+func (e *eobAcc) decode16(br *boolcoder.Reader, txSize, planeType, refType int,
+	scan, nb []int16, initCtx int, probs *coeftoken.CoefProbs, counts *compheader.Counts) []int64 {
+	out, eob := coeftoken.DecodeBlock16EOB(br, txSize, planeType, refType, scan, nb, initCtx, probs, counts)
+	e.last = eob
+	e.total += eob
+	return out
+}
+
 // Block reconstructs one VP9 coding block and writes the result into dst.
 //
 // Parameters:
@@ -100,6 +140,9 @@ var MiW4, MiH4 int
 //     nil entries are safe (their plane will remain unchanged)
 //   - aboveRow, leftCol: context arrays; used to gather above/left pixel
 //     borders and to update NZC flags after residual decode
+//
+// The result is the sum of the eobs of the block's transform blocks (0 for a
+// skipped block): libvpx decode_block's eobtotal.
 func Block(br *boolcoder.Reader, probs *compheader.Probs, counts *compheader.Counts,
 	bm blockmode.BlockMode, lossless bool,
 	mv0, mv1 mv.MV,
@@ -108,7 +151,8 @@ func Block(br *boolcoder.Reader, probs *compheader.Probs, counts *compheader.Cou
 	refs [3]*refbuf.Frame,
 	aboveRow *ctx.Row, leftCol *ctx.Col,
 	row4, col4, bsW4, bsH4 int,
-) {
+) (eobTotal int) {
+	var ea eobAcc
 	bsW := bsW4 * 4 // coding block width in pixels (luma)
 	bsH := bsH4 * 4 // coding block height in pixels (luma)
 
@@ -124,17 +168,18 @@ func Block(br *boolcoder.Reader, probs *compheader.Probs, counts *compheader.Cou
 	}
 
 	if bm.IsInter {
-		reconstructInter(br, probs, counts, bm, lossless, mv0, mv1, dc, ac,
+		reconstructInter(&ea, br, probs, counts, bm, lossless, mv0, mv1, dc, ac,
 			dst, refs, aboveRow, leftCol, row4, col4, bsW, bsH, bsW4, bsH4)
 	} else {
-		reconstructIntra(br, probs, counts, bm, lossless, dc, ac,
+		reconstructIntra(&ea, br, probs, counts, bm, lossless, dc, ac,
 			dst, aboveRow, leftCol, row4, col4, bsW, bsH, bsW4, bsH4)
 	}
+	return ea.total
 }
 
 // ---- intra ------------------------------------------------------------------
 
-func reconstructIntra(br *boolcoder.Reader, probs *compheader.Probs, counts *compheader.Counts,
+func reconstructIntra(ea *eobAcc, br *boolcoder.Reader, probs *compheader.Probs, counts *compheader.Counts,
 	bm blockmode.BlockMode, lossless bool,
 	dc, ac [3]int16,
 	dst *refbuf.Frame,
@@ -166,7 +211,7 @@ func reconstructIntra(br *boolcoder.Reader, probs *compheader.Probs, counts *com
 					subRow > TileRowStart4*4, subCol > TileColStart4*4, tx+1 < bsW4)
 
 				if !bm.Skip {
-					txType := TxTypeFor(subMode, ctx.TX4x4, false)
+					txType := TxTypeFor(subMode, ctx.TX4x4, lossless)
 					subRow4 := row4 + ty
 					subCol4 := col4 + tx
 					initCtx := nzcInitCtx(aboveRow, leftCol, subCol4, subRow4, 1)
@@ -178,7 +223,7 @@ func reconstructIntra(br *boolcoder.Reader, probs *compheader.Probs, counts *com
 							fmt.Fprintf(DbgW, "RC go Ysub(%d,%d) initCtx=%d txType=%d bpBefore=%d rng=%d t=%d\n", ty, tx, initCtx, txType, br.BitPos(), rb, tb)
 						}
 					}
-					coeffs := coeftoken.DecodeBlock(br, ctx.TX4x4, 0, 0, scan, nb, initCtx, &probs.CoefProbs, counts)
+					coeffs := ea.decode(br, ctx.TX4x4, 0, 0, scan, nb, initCtx, &probs.CoefProbs, counts)
 					if dbg {
 						nzcnt := 0
 						for _, v := range coeffs {
@@ -189,13 +234,7 @@ func reconstructIntra(br *boolcoder.Reader, probs *compheader.Probs, counts *com
 						fmt.Fprintf(DbgW, "RC go Ysub(%d,%d) nz=%d bpAfter=%d\n", ty, tx, nzcnt, br.BitPos())
 					}
 					if coeffs != nil {
-						nzc := false
-						for _, v := range coeffs {
-							if v != 0 {
-								nzc = true
-								break
-							}
-						}
+						nzc := ea.last > 0 // libvpx: eob > 0
 						updateNZC(aboveRow, leftCol, subCol4, subRow4, 1, nzc, 0)
 						dequant.DequantBlock(coeffs, dc[0], ac[0], 0)
 						if lossless {
@@ -226,7 +265,7 @@ func reconstructIntra(br *boolcoder.Reader, probs *compheader.Probs, counts *com
 		txBs := 4 << bm.TxSize
 		numX := bsW4 / txN4
 		numY := bsH4 / txN4
-		txType := TxTypeFor(bm.YMode, bm.TxSize, false)
+		txType := TxTypeFor(bm.YMode, bm.TxSize, lossless)
 		scan, nb := coeftoken.ScanOrder(int(bm.TxSize), scanTypeFor(txType))
 		var aboveBuf [128]byte
 		var leftBuf [64]byte
@@ -252,9 +291,9 @@ func reconstructIntra(br *boolcoder.Reader, probs *compheader.Probs, counts *com
 
 				if !bm.Skip {
 					initCtx := nzcInitCtx(aboveRow, leftCol, sc4, sr4, txN4)
-					coeffs := coeftoken.DecodeBlock(br, int(bm.TxSize), 0, 0, scan, nb, initCtx, &probs.CoefProbs, counts)
+					coeffs := ea.decode(br, int(bm.TxSize), 0, 0, scan, nb, initCtx, &probs.CoefProbs, counts)
 					if coeffs != nil {
-						updateNZC(aboveRow, leftCol, sc4, sr4, txN4, anyNonzero(coeffs), 0)
+						updateNZC(aboveRow, leftCol, sc4, sr4, txN4, ea.last > 0, 0)
 						dequant.DequantBlock(coeffs, dc[0], ac[0], dqShift(bm.TxSize))
 						if lossless {
 							wht.IWHT4x4(coeffs)
@@ -271,18 +310,15 @@ func reconstructIntra(br *boolcoder.Reader, probs *compheader.Probs, counts *com
 		}
 	}
 
-	// UV planes (4:2:0: half resolution) — shared stack buffers reused for U and V.
-	uvBsW := bsW / 2
-	if uvBsW < 4 {
-		uvBsW = 4
-	}
-	uvBsH := bsH / 2
-	if uvBsH < 4 {
-		uvBsH = 4
-	}
-	uvTxSize := uvTxSizeFor(bm.TxSize, bsW4, bsH4)
-	uvRow := row / 2
-	uvCol := col / 2
+	// UV planes (subsampled by dst.SubX/SubY; the coding block is at least
+	// 8×8 luma, so the chroma block is at least 4×4) — shared stack buffers
+	// reused for U and V.
+	ssX, ssY := uint(dst.SubX), uint(dst.SubY)
+	uvBsW := bsW >> ssX
+	uvBsH := bsH >> ssY
+	uvTxSize := uvTxSizeSS(bm.TxSize, bsW4, bsH4, dst.SubX, dst.SubY)
+	uvRow := row >> ssY
+	uvCol := col >> ssX
 
 	var aboveUVBuf [64]byte // 2×32
 	var leftUVBuf [32]byte
@@ -290,7 +326,9 @@ func reconstructIntra(br *boolcoder.Reader, probs *compheader.Probs, counts *com
 	uvTxBs := 4 << uvTxSize
 	uvNumX := uvBsW / uvTxBs
 	uvNumY := uvBsH / uvTxBs
-	uvTxN4 := 2 << uvTxSize // luma 4×4 units spanned per UV TX block (4:2:0)
+	// Luma 4×4 units spanned per UV TX block along each axis.
+	uvTxN4X := (1 << uvTxSize) << ssX
+	uvTxN4Y := (1 << uvTxSize) << ssY
 	uvScan, uvNb := coeftoken.ScanOrder(int(uvTxSize), coeftoken.ScanDefault)
 
 	for _, plane := range []struct {
@@ -308,29 +346,29 @@ func reconstructIntra(br *boolcoder.Reader, probs *compheader.Probs, counts *com
 		// Per-TX intra for UV (libvpx order): predict + reconstruct + write each
 		// UV transform block before the next.
 		for ty := 0; ty < uvNumY; ty++ {
-			if MiH4 > 0 && uvRow+ty*uvTxBs >= MiH4*2 { // UV TX below frame (4:2:0)
+			if MiH4 > 0 && uvRow+ty*uvTxBs >= (MiH4*4)>>ssY { // UV TX below frame
 				break
 			}
 			for tx := 0; tx < uvNumX; tx++ {
-				if MiW4 > 0 && uvCol+tx*uvTxBs >= MiW4*2 { // UV TX past right edge
+				if MiW4 > 0 && uvCol+tx*uvTxBs >= (MiW4*4)>>ssX { // UV TX past right edge
 					break
 				}
 				uvTxRow := uvRow + ty*uvTxBs
 				uvTxCol := uvCol + tx*uvTxBs
 				above := aboveUVBuf[:2*uvTxBs]
 				left := leftUVBuf[:uvTxBs]
-				corner := gatherBordersUV(plane.buf, plane.stride, plane.base, dst.Width/2, dst.Height/2, uvTxRow, uvTxCol, uvTxBs, uvTxBs, above, left)
+				corner := gatherBordersUV(plane.buf, plane.stride, plane.base, dst.UVWidth(), dst.UVHeight(), uvTxRow, uvTxCol, uvTxBs, uvTxBs, above, left, ssX, ssY)
 				txPred := txPredUVBuf[:uvTxBs*uvTxBs]
 				intra.PredictBlock(plane.mode, txPred, uvTxBs, uvTxBs, above, left, corner,
-					uvTxRow > TileRowStart4*2, uvTxCol > TileColStart4*2, (tx+1)*uvTxBs < uvBsW)
+					uvTxRow > (TileRowStart4*4)>>ssY, uvTxCol > (TileColStart4*4)>>ssX, (tx+1)*uvTxBs < uvBsW)
 
-				sc4 := col4 + tx*uvTxN4
-				sr4 := row4 + ty*uvTxN4
+				sc4 := col4 + tx*uvTxN4X
+				sr4 := row4 + ty*uvTxN4Y
 				if !bm.Skip {
-					initCtx := nzcInitCtxUV(aboveRow, leftCol, sc4, sr4, uvTxN4, plane.planeIdx)
-					coeffs := coeftoken.DecodeBlock(br, int(uvTxSize), 1, 0, uvScan, uvNb, initCtx, &probs.CoefProbs, counts)
+					initCtx := nzcInitCtxUV(aboveRow, leftCol, sc4, sr4, uvTxN4X, uvTxN4Y, plane.planeIdx)
+					coeffs := ea.decode(br, int(uvTxSize), 1, 0, uvScan, uvNb, initCtx, &probs.CoefProbs, counts)
 					if coeffs != nil {
-						updateNZC(aboveRow, leftCol, sc4, sr4, uvTxN4, anyNonzero(coeffs), plane.planeIdx)
+						updateNZCUV(aboveRow, leftCol, sc4, sr4, uvTxN4X, uvTxN4Y, ea.last > 0, plane.planeIdx)
 						dequant.DequantBlock(coeffs, plane.dcQ, plane.acQ, dqShift(uvTxSize))
 						if lossless {
 							wht.IWHT4x4(coeffs)
@@ -339,7 +377,7 @@ func reconstructIntra(br *boolcoder.Reader, probs *compheader.Probs, counts *com
 						}
 						addResidual(txPred, uvTxBs, coeffs, uvTxBs)
 					} else {
-						updateNZC(aboveRow, leftCol, sc4, sr4, uvTxN4, false, plane.planeIdx)
+						updateNZCUV(aboveRow, leftCol, sc4, sr4, uvTxN4X, uvTxN4Y, false, plane.planeIdx)
 					}
 				}
 				writePlane(plane.buf, plane.stride, plane.base, uvTxRow, uvTxCol, txPred, uvTxBs, uvTxBs)
@@ -357,6 +395,33 @@ func avgSubMV(sub [4][2]mv.MV, ref int) (col, row int) {
 	return roundMVCompQ4(sc), roundMVCompQ4(sr)
 }
 
+// splitMVUV is libvpx average_split_mvs: the MV (1/8 luma pel) used to
+// predict chroma 4×4 number block of a sub-8×8 coding block. 4:4:4 uses the
+// luma sub-block's own MV, 4:4:0 averages blocks (block, block+2), 4:2:2
+// averages (block, block+1) and 4:2:0 averages all four (avgSubMV).
+func splitMVUV(sub [4][2]mv.MV, ref, block, ssX, ssY int) (col, row int) {
+	switch {
+	case ssX != 0 && ssY != 0:
+		return avgSubMV(sub, ref)
+	case ssX == 0 && ssY == 0:
+		return int(sub[block][ref].Col), int(sub[block][ref].Row)
+	}
+	other := block + 2 // 4:4:0
+	if ssX != 0 {
+		other = block + 1 // 4:2:2
+	}
+	return roundMVCompQ2(int(sub[block][ref].Col) + int(sub[other][ref].Col)),
+		roundMVCompQ2(int(sub[block][ref].Row) + int(sub[other][ref].Row))
+}
+
+// roundMVCompQ2 is libvpx round_mv_comp_q2.
+func roundMVCompQ2(v int) int {
+	if v < 0 {
+		return (v - 1) / 2
+	}
+	return (v + 1) / 2
+}
+
 func roundMVCompQ4(v int) int {
 	if v < 0 {
 		return (v - 2) / 4
@@ -366,7 +431,7 @@ func roundMVCompQ4(v int) int {
 
 // ---- inter ------------------------------------------------------------------
 
-func reconstructInter(br *boolcoder.Reader, probs *compheader.Probs, counts *compheader.Counts,
+func reconstructInter(ea *eobAcc, br *boolcoder.Reader, probs *compheader.Probs, counts *compheader.Counts,
 	bm blockmode.BlockMode, lossless bool,
 	mv0, mv1 mv.MV,
 	dc, ac [3]int16,
@@ -432,39 +497,27 @@ func reconstructInter(br *boolcoder.Reader, probs *compheader.Probs, counts *com
 	}
 
 	if !bm.Skip {
-		addResidualY(br, probs, counts, bm.TxSize, transform.DCT_DCT, lossless, dc[0], ac[0],
+		addResidualY(ea, br, probs, counts, bm.TxSize, transform.DCT_DCT, lossless, dc[0], ac[0],
 			pred, bsW, bsH, aboveRow, leftCol, row4, col4)
 	}
 	writePlane(dst.Y, dst.YStride, dst.YBase(), row, col, pred, bsW, bsH)
 
-	// UV prediction (4:2:0)
-	uvBsW := bsW / 2
-	if uvBsW < 4 {
-		uvBsW = 4
-	}
-	uvBsH := bsH / 2
-	if uvBsH < 4 {
-		uvBsH = 4
-	}
-	uvTxSize := uvTxSizeFor(bm.TxSize, bsW4, bsH4)
-	uvRow := row / 2
-	uvCol := col / 2
-	// Chroma sub-pel (4:2:0): the luma 1/8-pel MV equals a 1/16-pel chroma MV
-	// (1 chroma px = 2 luma px), so the integer offset is mv>>4 and the filter
-	// phase is mv&15 — all 16 phases (libvpx clamp_mv_to_umv_border_sb, ss=1).
-	// Taken from the unclamped block MVs: the clamp is per plane.
-	col0UV, row0UV := int(mv0.Col), int(mv0.Row)
-	col1UV, row1UV := int(mv1.Col), int(mv1.Row)
-	if bm.NumSubMV > 0 {
-		// Sub-8×8 chroma uses the q4-rounded average of the four luma sub-MVs
-		// (libvpx mi_mv_pred_q4 / round_mv_comp_q4).
-		col0UV, row0UV = avgSubMV(bm.SubMV, 0)
-		col1UV, row1UV = avgSubMV(bm.SubMV, 1)
-	}
-
-	col0UV, row0UV = clampMVQ4(col0UV, col, bsW, bsW/2, MiW4, 1), clampMVQ4(row0UV, row, bsH, bsH/2, MiH4, 1)
-	col1UV, row1UV = clampMVQ4(col1UV, col, bsW, bsW/2, MiW4, 1), clampMVQ4(row1UV, row, bsH, bsH/2, MiH4, 1)
-	var predUVBuf [32 * 32]byte
+	// UV prediction. The plane block is (bsW>>ssX)×(bsH>>ssY) (at least 4×4:
+	// the coding block is at least 8×8 luma).
+	ssX, ssY := dst.SubX, dst.SubY
+	uvBsW := bsW >> uint(ssX)
+	uvBsH := bsH >> uint(ssY)
+	uvTxSize := uvTxSizeSS(bm.TxSize, bsW4, bsH4, ssX, ssY)
+	uvRow := row >> uint(ssY)
+	uvCol := col >> uint(ssX)
+	// Chroma sub-pel: clampMVQ4 scales the 1/8-luma-pel MV to the plane's
+	// 1/16-pel units (×2 on a non-subsampled axis; on a subsampled axis the
+	// value is already 1/16 chroma pel), so the integer offset is q4>>4 and the
+	// filter phase q4&15 (libvpx clamp_mv_to_umv_border_sb). Taken from the
+	// unclamped block MVs: the clamp is per plane.
+	col0UV, row0UV := clampMVQ4(int(mv0.Col), col, bsW, uvBsW, MiW4, ssX), clampMVQ4(int(mv0.Row), row, bsH, uvBsH, MiH4, ssY)
+	col1UV, row1UV := clampMVQ4(int(mv1.Col), col, bsW, uvBsW, MiW4, ssX), clampMVQ4(int(mv1.Row), row, bsH, uvBsH, MiH4, ssY)
+	var predUVBuf [64 * 64]byte
 	for pi := 0; pi < 2; pi++ {
 		var dstBuf []byte
 		var dstStride, dstBase int
@@ -479,7 +532,31 @@ func reconstructInter(br *boolcoder.Reader, probs *compheader.Probs, counts *com
 		}
 
 		predUV := predUVBuf[:uvBsW*uvBsH]
-		if ref0 != nil && compound && ref1 != nil {
+		if bm.NumSubMV > 0 && ref0 != nil {
+			// Sub-8×8: one 4×4 prediction per chroma 4×4, each with the MV
+			// libvpx average_split_mvs derives for block index i (raster order
+			// over the plane's 4×4s): the luma sub-MV itself for 4:4:4, a pair
+			// average for 4:2:2 / 4:4:0, the average of all four for 4:2:0.
+			i := 0
+			for y := 0; y < uvBsH; y += 4 {
+				for x := 0; x < uvBsW; x += 4 {
+					c0, r0 := splitMVUV(bm.SubMV, 0, i, ssX, ssY)
+					c0, r0 = clampMVQ4(c0, col, bsW, uvBsW, MiW4, ssX), clampMVQ4(r0, row, bsH, uvBsH, MiH4, ssY)
+					b0 := uOrVBase(ref0, pi) + (uvRow+y+(r0>>4))*ref0.UVStride + (uvCol + x + (c0 >> 4))
+					po := y*uvBsW + x
+					if compound && ref1 != nil {
+						c1, r1 := splitMVUV(bm.SubMV, 1, i, ssX, ssY)
+						c1, r1 = clampMVQ4(c1, col, bsW, uvBsW, MiW4, ssX), clampMVQ4(r1, row, bsH, uvBsH, MiH4, ssY)
+						b1 := uOrVBase(ref1, pi) + (uvRow+y+(r1>>4))*ref1.UVStride + (uvCol + x + (c1 >> 4))
+						mc.PredictComp(uOrVSlice(ref0, pi), b0, ref0.UVStride, c0&15, r0&15, filt,
+							uOrVSlice(ref1, pi), b1, ref1.UVStride, c1&15, r1&15, filt, 4, 4, predUV[po:], uvBsW)
+					} else {
+						mc.Predict(uOrVSlice(ref0, pi), b0, ref0.UVStride, 4, 4, c0&15, r0&15, filt, predUV[po:], uvBsW)
+					}
+					i++
+				}
+			}
+		} else if ref0 != nil && compound && ref1 != nil {
 			base0 := uOrVBase(ref0, pi) + (uvRow+(row0UV>>4))*ref0.UVStride + (uvCol + (col0UV >> 4))
 			base1 := uOrVBase(ref1, pi) + (uvRow+(row1UV>>4))*ref1.UVStride + (uvCol + (col1UV >> 4))
 			mc.PredictComp(
@@ -494,8 +571,8 @@ func reconstructInter(br *boolcoder.Reader, probs *compheader.Probs, counts *com
 		}
 
 		if !bm.Skip {
-			addResidualUV(br, probs, counts, uvTxSize, lossless, dcQ, acQ, predUV, uvBsW, uvBsH,
-				aboveRow, leftCol, col4, row4, pi+1) // plane 1=U, 2=V
+			addResidualUV(ea, br, probs, counts, uvTxSize, lossless, dcQ, acQ, predUV, uvBsW, uvBsH,
+				aboveRow, leftCol, col4, row4, pi+1, ssX, ssY) // plane 1=U, 2=V
 		}
 		writePlane(dstBuf, dstStride, dstBase, uvRow, uvCol, predUV, uvBsW, uvBsH)
 	}
@@ -506,7 +583,7 @@ func reconstructInter(br *boolcoder.Reader, probs *compheader.Probs, counts *com
 // addResidualY decodes coefficients for all TX-sized sub-blocks of the Y plane
 // and adds the inverse-transformed residual to pred in-place.
 // bsW/bsH are the luma block dimensions in pixels (may be non-square for HORZ/VERT).
-func addResidualY(br *boolcoder.Reader, probs *compheader.Probs, counts *compheader.Counts,
+func addResidualY(ea *eobAcc, br *boolcoder.Reader, probs *compheader.Probs, counts *compheader.Counts,
 	txSize uint8, txType transform.TxType, lossless bool, dcQ, acQ int16,
 	pred []byte, bsW, bsH int,
 	aboveRow *ctx.Row, leftCol *ctx.Col,
@@ -532,7 +609,7 @@ func addResidualY(br *boolcoder.Reader, probs *compheader.Probs, counts *comphea
 			subCol4 := col4 + tx*txN4
 			initCtx := nzcInitCtx(aboveRow, leftCol, subCol4, subRow4, txN4)
 
-			coeffs := coeftoken.DecodeBlock(br, int(txSize), 0, refType, scan, nb, initCtx, &probs.CoefProbs, counts)
+			coeffs := ea.decode(br, int(txSize), 0, refType, scan, nb, initCtx, &probs.CoefProbs, counts)
 			if coeffs == nil {
 				updateNZC(aboveRow, leftCol, subCol4, subRow4, txN4, false, 0)
 				continue
@@ -545,7 +622,7 @@ func addResidualY(br *boolcoder.Reader, probs *compheader.Probs, counts *comphea
 					break
 				}
 			}
-			nzc := !dcOnly || (coeffs[0] != 0)
+			nzc := ea.last > 0 // libvpx dec_set_contexts(eob > 0)
 			updateNZC(aboveRow, leftCol, subCol4, subRow4, txN4, nzc, 0)
 
 			// DC-only fast path: skip DequantBlock, full InvTransform2D, and indexed addResidual.
@@ -577,32 +654,33 @@ func addResidualY(br *boolcoder.Reader, probs *compheader.Probs, counts *comphea
 // bsW/bsH are the UV block dimensions in pixels (may be non-square).
 // col4, row4 are the luma 4×4 position of the coding block; plane is 1 (U) or 2 (V).
 // uvTxN4 = txN4 in luma 4×4 units for one UV TX block = 2 * (1 << uvTxSize).
-func addResidualUV(br *boolcoder.Reader, probs *compheader.Probs, counts *compheader.Counts,
+func addResidualUV(ea *eobAcc, br *boolcoder.Reader, probs *compheader.Probs, counts *compheader.Counts,
 	txSize uint8, lossless bool, dcQ, acQ int16,
 	pred []byte, bsW, bsH int,
-	aboveRow *ctx.Row, leftCol *ctx.Col, col4, row4, plane int,
+	aboveRow *ctx.Row, leftCol *ctx.Col, col4, row4, plane, ssX, ssY int,
 ) {
 	txBs := 4 << txSize
 	numX := bsW / txBs
 	numY := bsH / txBs
 	scan, nb := coeftoken.ScanOrder(int(txSize), coeftoken.ScanDefault)
-	// Each UV TX block covers 2 * txN4 luma 4×4 units per dimension (4:2:0).
-	uvTxN4 := 2 << txSize
+	// Luma 4×4 units covered by one UV TX block along each axis.
+	uvTxN4X := (1 << txSize) << uint(ssX)
+	uvTxN4Y := (1 << txSize) << uint(ssY)
 
 	for ty := 0; ty < numY; ty++ {
-		if MiH4 > 0 && row4+ty*uvTxN4 >= MiH4 { // UV TX block below the frame
+		if MiH4 > 0 && row4+ty*uvTxN4Y >= MiH4 { // UV TX block below the frame
 			break
 		}
 		for tx := 0; tx < numX; tx++ {
-			if MiW4 > 0 && col4+tx*uvTxN4 >= MiW4 { // UV TX block past the frame
+			if MiW4 > 0 && col4+tx*uvTxN4X >= MiW4 { // UV TX block past the frame
 				break
 			}
-			subCol4 := col4 + tx*uvTxN4
-			subRow4 := row4 + ty*uvTxN4
-			initCtx := nzcInitCtxUV(aboveRow, leftCol, subCol4, subRow4, uvTxN4, plane)
-			coeffs := coeftoken.DecodeBlock(br, int(txSize), 1, 1, scan, nb, initCtx, &probs.CoefProbs, counts)
+			subCol4 := col4 + tx*uvTxN4X
+			subRow4 := row4 + ty*uvTxN4Y
+			initCtx := nzcInitCtxUV(aboveRow, leftCol, subCol4, subRow4, uvTxN4X, uvTxN4Y, plane)
+			coeffs := ea.decode(br, int(txSize), 1, 1, scan, nb, initCtx, &probs.CoefProbs, counts)
 			if coeffs == nil {
-				updateNZC(aboveRow, leftCol, subCol4, subRow4, uvTxN4, false, plane)
+				updateNZCUV(aboveRow, leftCol, subCol4, subRow4, uvTxN4X, uvTxN4Y, false, plane)
 				continue
 			}
 			// Combined scan: check DC-only and nzc in one pass over AC coefficients.
@@ -613,8 +691,8 @@ func addResidualUV(br *boolcoder.Reader, probs *compheader.Probs, counts *comphe
 					break
 				}
 			}
-			nzc := !dcOnly || (coeffs[0] != 0)
-			updateNZC(aboveRow, leftCol, subCol4, subRow4, uvTxN4, nzc, plane)
+			nzc := ea.last > 0 // libvpx dec_set_contexts(eob > 0)
+			updateNZCUV(aboveRow, leftCol, subCol4, subRow4, uvTxN4X, uvTxN4Y, nzc, plane)
 
 			// DC-only fast path: UV always uses DCT_DCT.
 			if !lossless && dcOnly {
@@ -674,10 +752,11 @@ func addResidual(pred []byte, predStride int, coeffs []int16, txBs int) {
 // ---- border gathering -------------------------------------------------------
 
 // TileColStart4, TileRowStart4 hold the current tile's top-left in 4×4 units
-// (set by the decoder before each tile). Intra prediction treats an above/left
-// neighbour as available only when it lies inside the current tile — libvpx
-// AvailL = MiCol > MiColStart / AvailU = MiRow > MiRowStart. For a single tile
-// these are 0 and the behaviour is identical to a plain frame-edge check.
+// (set by the decoder before each tile). Intra prediction treats a left
+// neighbour as available only when it lies inside the current tile column
+// (libvpx left_mi: mi_col > tile->mi_col_start). The above neighbour is
+// frame-relative in libvpx (above_mi: mi_row != 0) — tile rows do not cut intra
+// prediction — so the decoder keeps TileRowStart4 at 0 for every tile row.
 var (
 	TileColStart4 int
 	TileRowStart4 int
@@ -689,15 +768,17 @@ var (
 // pixels beyond the frame edge are filled with the last available value.
 // Caller must provide above[:2*bsW] and left[:bsH]; returns topLeft.
 func gatherBordersY(f *refbuf.Frame, row, col, bsW, bsH int, above, left []byte) byte {
-	return gatherBorders(f.Y, f.YStride, f.YBase(), f.Width, f.Height, row, col, bsW, bsH, above, left,
+	w, h := intraFrameSize(f.Width, f.Height, 0, 0)
+	return gatherBorders(f.Y, f.YStride, f.YBase(), w, h, row, col, bsW, bsH, above, left,
 		TileColStart4*4, TileRowStart4*4)
 }
 
 // gatherBorders reads the above-row (2*bsW samples) and left-column (bsH
 // samples) reference pixels for an intra block at (row,col), replicating the
-// frame edge for samples outside the visible w×h picture (libvpx
+// frame edge for samples outside the w×h plane (libvpx
 // build_intra_predictors slower path: out-of-frame above/left samples use the
-// last in-frame pixel, NOT the decoded out-of-frame neighbour). Unavailable
+// last in-frame pixel, NOT the decoded out-of-frame neighbour). w×h is the
+// 8-aligned buffer size, see intraFrameSize. Unavailable
 // sides are filled with 128 (the caller's PredictBlock re-pads per availability).
 func gatherBorders(plane []byte, stride, base, w, h, row, col, bsW, bsH int, above, left []byte, leftBound, aboveBound int) byte {
 	var topLeft byte
@@ -749,10 +830,11 @@ func gatherBorders(plane []byte, stride, base, w, h, row, col, bsW, bsH int, abo
 // gatherBordersUV reads borders for one UV plane (2*bsW above, bsH left).
 // above is 2*bsW to satisfy D45/D63 extended requirements.
 // Caller must provide above[:2*bsW] and left[:bsH]; returns topLeft.
-func gatherBordersUV(buf []byte, stride, base, w, h, row, col, bsW, bsH int, above, left []byte) byte {
-	// Chroma is 4:2:0, so the tile boundary in chroma pixels is half the luma one.
+func gatherBordersUV(buf []byte, stride, base, w, h, row, col, bsW, bsH int, above, left []byte, ssX, ssY uint) byte {
+	// The tile boundary in chroma pixels is the luma one scaled by the subsampling.
+	w, h = intraFrameSize(w, h, ssX, ssY)
 	return gatherBorders(buf, stride, base, w, h, row, col, bsW, bsH, above, left,
-		TileColStart4*2, TileRowStart4*2)
+		(TileColStart4*4)>>ssX, (TileRowStart4*4)>>ssY)
 }
 
 // ---- plane write ------------------------------------------------------------
@@ -769,14 +851,26 @@ func writePlane(buf []byte, stride, base, row, col int, pred []byte, bsW, bsH in
 
 // ---- helper utilities -------------------------------------------------------
 
-// uvTxSizeFor returns the UV TX size for a given Y TX size and block dimensions.
-// For 4:2:0: UV block is (bsW4/2)×(bsH4/2) in 4×4 units; max UV TX = log2(min(uvW4,uvH4)).
+// uvTxSizeFor returns the 4:2:0 UV TX size for a given Y TX size and block
+// dimensions (UVTxSize with ssX = ssY = 1).
 func uvTxSizeFor(yTxSize uint8, bsW4, bsH4 int) uint8 {
-	uvW4 := bsW4 / 2
+	return uvTxSizeSS(yTxSize, bsW4, bsH4, 1, 1)
+}
+
+// UVTxSize returns the chroma transform size for a coding block of bsW4×bsH4
+// luma 4×4 units with luma transform size yTxSize, for chroma subsampling
+// shifts ssX, ssY (libvpx uv_txsize_lookup[bsize][tx][ss_x][ss_y]): the luma
+// size capped to the largest transform that fits the chroma block.
+func UVTxSize(yTxSize uint8, bsW4, bsH4, ssX, ssY int) uint8 {
+	return uvTxSizeSS(yTxSize, bsW4, bsH4, ssX, ssY)
+}
+
+func uvTxSizeSS(yTxSize uint8, bsW4, bsH4, ssX, ssY int) uint8 {
+	uvW4 := bsW4 >> uint(ssX)
 	if uvW4 < 1 {
 		uvW4 = 1
 	}
-	uvH4 := bsH4 / 2
+	uvH4 := bsH4 >> uint(ssY)
 	if uvH4 < 1 {
 		uvH4 = 1
 	}
@@ -846,19 +940,29 @@ func nzcInitCtx(aboveRow *ctx.Row, leftCol *ctx.Col, col4, row4, txN4 int) int {
 }
 
 // nzcInitCtxUV returns the NZC init context for a UV TX sub-block, aggregating
-// across the UV TX block's span (in luma 4×4 units). col4, row4 are luma 4×4
-// positions; plane is 1 (U) or 2 (V).
-func nzcInitCtxUV(aboveRow *ctx.Row, leftCol *ctx.Col, col4, row4, span, plane int) int {
+// across the UV TX block's span (in luma 4×4 units: spanX columns of the above
+// context, spanY rows of the left context — they differ for 4:2:2 / 4:4:0).
+// col4, row4 are luma 4×4 positions; plane is 1 (U) or 2 (V).
+func nzcInitCtxUV(aboveRow *ctx.Row, leftCol *ctx.Col, col4, row4, spanX, spanY, plane int) int {
 	var an, ln bool
-	for i := 0; i < span; i++ {
+	for i := 0; i < spanX; i++ {
 		if col4+i < aboveRow.N4 && aboveRow.NZC[plane][col4+i] {
 			an = true
 		}
+	}
+	for i := 0; i < spanY; i++ {
 		if row4+i < leftCol.N4 && leftCol.NZC[plane][row4+i] {
 			ln = true
 		}
 	}
 	return ctx.NZCInitCtx(an, ln)
+}
+
+// updateNZCUV is updateNZC for a UV TX block spanning spanX above-context
+// columns and spanY left-context rows (luma 4×4 units).
+func updateNZCUV(aboveRow *ctx.Row, leftCol *ctx.Col, col4, row4, spanX, spanY int, nzc bool, plane int) {
+	aboveRow.SetNZC(col4, spanX, plane, nzc)
+	leftCol.SetNZC(row4, spanY, plane, nzc)
 }
 
 // updateNZC writes the NZC flag for the given plane to above/left context.

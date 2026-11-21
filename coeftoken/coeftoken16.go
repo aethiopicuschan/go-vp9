@@ -28,8 +28,8 @@ func cat6ProbsBD() []uint8 {
 	}
 }
 
-func DecodeBlock16(br *boolcoder.Reader, txSize, planeType, refType int,
-	scan, nb []int16, initCtx int, probs *CoefProbs, counts *compheader.Counts) []int64 {
+func DecodeBlock16EOB(br *boolcoder.Reader, txSize, planeType, refType int,
+	scan, nb []int16, initCtx int, probs *CoefProbs, counts *compheader.Counts) (coeffs []int64, eob int) {
 
 	n := nCoefs(txSize)
 	out := make([]int64, n)
@@ -74,7 +74,7 @@ func DecodeBlock16(br *boolcoder.Reader, txSize, planeType, refType int,
 			tokenCache[scan[c]] = 0
 			c++
 			if c >= n {
-				return out
+				return out, c
 			}
 			ctx = getCoefContext(nb, tokenCache, c)
 			bd = int(band(txSize, c))
@@ -153,5 +153,12 @@ func DecodeBlock16(br *boolcoder.Reader, txSize, planeType, refType int,
 			ctx = getCoefContext(nb, tokenCache, c)
 		}
 	}
+	return out, c
+}
+
+// DecodeBlock16 is DecodeBlock16EOB without the eob.
+func DecodeBlock16(br *boolcoder.Reader, txSize, planeType, refType int,
+	scan, nb []int16, initCtx int, probs *CoefProbs, counts *compheader.Counts) []int64 {
+	out, _ := DecodeBlock16EOB(br, txSize, planeType, refType, scan, nb, initCtx, probs, counts)
 	return out
 }

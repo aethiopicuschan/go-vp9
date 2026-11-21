@@ -32,35 +32,46 @@ package refbuf
 // to extend_and_predict) so any MV within BORDER pixels of the edge is exact.
 const BORDER = 96
 
-// Frame is one decoded reference frame (4:2:0 planar, 8-bit).
+// Frame is one decoded reference frame (planar, 8-bit).
 type Frame struct {
 	// Y, U, V are the luma and chroma planes including their borders.
 	Y, U, V []byte
 
 	// Stride is the row stride (in bytes) of each plane.
-	// For Y:   stride = width  + 2*BORDER
-	// For U/V: stride = width/2 + 2*BORDER  (4:2:0)
+	// For Y:   stride = width (rounded up to even when SubX=1) + 2*BORDER
+	// For U/V: stride = UVWidth() + 2*BORDER
 	YStride, UVStride int
 
-	// Width and height of the visible picture in pixels.
+	// Width and Height are the true size of the visible picture in pixels
+	// (libvpx y_crop_width / y_crop_height). They may be odd; the chroma
+	// planes then hold UVWidth() x UVHeight() = ceil(Width/2) x ceil(Height/2)
+	// samples on each subsampled axis.
 	Width, Height int
+
+	// SubX, SubY are the chroma subsampling shifts (VP9 subsampling_x/y):
+	// 1,1 = 4:2:0 (what NewFrame allocates), 0,0 = 4:4:4, 1,0 = 4:2:2,
+	// 0,1 = 4:4:0. The visible chroma planes are UVWidth() x UVHeight().
+	SubX, SubY int
 }
 
 // NewFrame allocates a zero-initialised Frame for a 4:2:0 picture.
 func NewFrame(width, height int) *Frame {
-	// Round up to even for 4:2:0 chroma sub-sampling.
-	if width&1 != 0 {
-		width++
-	}
-	if height&1 != 0 {
-		height++
-	}
+	return NewFrameSS(width, height, 1, 1)
+}
 
-	yStride := width + 2*BORDER
-	uvStride := width/2 + 2*BORDER
+// NewFrameSS allocates a zero-initialised Frame with chroma subsampling
+// shifts subX, subY (each 0 or 1).
+func NewFrameSS(width, height, subX, subY int) *Frame {
+	// The planes are allocated for the size rounded up to even along each
+	// subsampled axis; Width and Height keep the true picture size.
+	allocW := width + width&subX
+	allocH := height + height&subY
 
-	yRows := height + 2*BORDER
-	uvRows := height/2 + 2*BORDER
+	yStride := allocW + 2*BORDER
+	uvStride := allocW>>uint(subX) + 2*BORDER
+
+	yRows := allocH + 2*BORDER
+	uvRows := allocH>>uint(subY) + 2*BORDER
 
 	return &Frame{
 		Y:        make([]byte, yRows*yStride),
@@ -70,8 +81,16 @@ func NewFrame(width, height int) *Frame {
 		UVStride: uvStride,
 		Width:    width,
 		Height:   height,
+		SubX:     subX,
+		SubY:     subY,
 	}
 }
+
+// UVWidth returns the visible width of the U and V planes.
+func (f *Frame) UVWidth() int { return (f.Width + f.SubX) >> uint(f.SubX) }
+
+// UVHeight returns the visible height of the U and V planes.
+func (f *Frame) UVHeight() int { return (f.Height + f.SubY) >> uint(f.SubY) }
 
 // YBase returns the linear index of pixel (0,0) in the Y plane.
 func (f *Frame) YBase() int { return BORDER*f.YStride + BORDER }
@@ -136,41 +155,45 @@ func (b *Buffer) SetRef(idx, slotIndex int) {
 // region so that sub-pixel filters always have valid data to read.
 func ExtendBorders(f *Frame) {
 	extendPlane(f.Y, f.Width, f.Height, f.YStride)
-	extendPlane(f.U, f.Width/2, f.Height/2, f.UVStride)
-	extendPlane(f.V, f.Width/2, f.Height/2, f.UVStride)
+	extendPlane(f.U, f.UVWidth(), f.UVHeight(), f.UVStride)
+	extendPlane(f.V, f.UVWidth(), f.UVHeight(), f.UVStride)
 }
 
 // extendPlane fills the BORDER-pixel margins of one plane by replicating
 // the nearest edge pixel.
 func extendPlane(buf []byte, width, height, stride int) {
-	// Top and bottom border rows are filled after left/right so that corners
-	// are also covered.
-
 	base := BORDER*stride + BORDER
+	// The plane may be allocated wider/taller than the visible width×height
+	// (odd luma sizes are rounded up to even): replicate from the true edge
+	// out to the end of the allocation, as libvpx extends references from
+	// y_crop_width / y_crop_height.
+	right := stride - BORDER - width
+	bottom := len(buf)/stride - BORDER - height
 
 	// Left and right borders for each visible row.
 	for r := 0; r < height; r++ {
 		rowStart := base + r*stride
-		left := buf[rowStart]
-		right := buf[rowStart+width-1]
+		l := buf[rowStart]
+		e := buf[rowStart+width-1]
 		for i := 1; i <= BORDER; i++ {
-			buf[rowStart-i] = left
-			buf[rowStart+width-1+i] = right
+			buf[rowStart-i] = l
+		}
+		for i := 1; i <= right; i++ {
+			buf[rowStart+width-1+i] = e
 		}
 	}
 
-	// Copy top border rows from row 0 (including extended left/right).
-	srcRow := base - BORDER // start of visible row 0 extended line
-	rowLen := width + 2*BORDER
+	// Top border rows from row 0 (including the extended left/right).
+	srcRow := base - BORDER
 	for i := 1; i <= BORDER; i++ {
 		dstRow := srcRow - i*stride
-		copy(buf[dstRow:dstRow+rowLen], buf[srcRow:srcRow+rowLen])
+		copy(buf[dstRow:dstRow+stride], buf[srcRow:srcRow+stride])
 	}
 
-	// Copy bottom border rows from the last visible row.
+	// Bottom border rows from the last visible row.
 	lastRow := base + (height-1)*stride - BORDER
-	for i := 1; i <= BORDER; i++ {
+	for i := 1; i <= bottom; i++ {
 		dstRow := lastRow + i*stride
-		copy(buf[dstRow:dstRow+rowLen], buf[lastRow:lastRow+rowLen])
+		copy(buf[dstRow:dstRow+stride], buf[lastRow:lastRow+stride])
 	}
 }

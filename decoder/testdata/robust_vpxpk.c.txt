@@ -1,0 +1,61 @@
+// Per-packet libvpx verdict recorder.
+// usage: vpxpk file.ivf
+// For every IVF packet prints one line:
+//   <index> OK <md5 of shown frame, I420, 16-bit LE when high bitdepth> <w>x<h>
+//   <index> OK -                 (decoded, no frame output)
+//   <index> ERR <error detail or vpx_codec_err_to_string>
+// Decoding continues after an error (like vpxdec --keep-going), single thread.
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include "vpx/vpx_decoder.h"
+#include "vpx/vp8dx.h"
+#include "md5_utils.h"
+static uint32_t le32(const uint8_t *p) {
+  return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24;
+}
+int main(int argc, char **argv) {
+  FILE *f = argc > 1 ? fopen(argv[1], "rb") : NULL;
+  if (!f) return 2;
+  uint8_t hdr[32], fh[12];
+  if (fread(hdr, 1, 32, f) != 32) return 2;
+  vpx_codec_ctx_t c;
+  vpx_codec_dec_cfg_t cfg = { 1, 0, 0 };
+  if (vpx_codec_dec_init(&c, vpx_codec_vp9_dx(), &cfg, 0)) return 3;
+  static uint8_t one;
+  for (int i = 0; fread(fh, 1, 12, f) == 12; i++) {
+    uint32_t n = le32(fh);
+    uint8_t *buf = malloc(n ? n : 1);
+    if (fread(buf, 1, n, f) != n) return 2;
+    vpx_codec_err_t e = vpx_codec_decode(&c, n ? buf : &one, n, NULL, 0);
+    if (e) {
+      const char *d = vpx_codec_error_detail(&c);
+      printf("%d ERR %s\n", i, d ? d : vpx_codec_err_to_string(e));
+    } else {
+      vpx_codec_iter_t it = NULL;
+      vpx_image_t *img = vpx_codec_get_frame(&c, &it);
+      if (!img) {
+        printf("%d OK -\n", i);
+      } else {
+        MD5Context m;
+        uint8_t dg[16];
+        MD5Init(&m);
+        int bps = (img->fmt & VPX_IMG_FMT_HIGHBITDEPTH) ? 2 : 1;
+        for (int p = 0; p < 3; p++) {
+          int w = p ? (img->d_w + img->x_chroma_shift) >> img->x_chroma_shift : img->d_w;
+          int h = p ? (img->d_h + img->y_chroma_shift) >> img->y_chroma_shift : img->d_h;
+          for (int y = 0; y < h; y++)
+            MD5Update(&m, img->planes[p] + y * img->stride[p], w * bps);
+        }
+        MD5Final(dg, &m);
+        printf("%d OK ", i);
+        for (int k = 0; k < 16; k++) printf("%02x", dg[k]);
+        printf(" %dx%d\n", img->d_w, img->d_h);
+      }
+    }
+    free(buf);
+    fflush(stdout);
+  }
+  return 0;
+}

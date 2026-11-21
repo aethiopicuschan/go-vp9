@@ -8,20 +8,26 @@ type Frame16 struct {
 	YStride, UVStride int
 	Width, Height     int
 	BitDepth          int // 10 or 12
+	// SubX, SubY are the chroma subsampling shifts (see Frame).
+	SubX, SubY int
 }
 
 // NewFrame16 allocates a zero-initialised 16-bit 4:2:0 frame.
 func NewFrame16(width, height, bitDepth int) *Frame16 {
-	if width&1 != 0 {
-		width++
-	}
-	if height&1 != 0 {
-		height++
-	}
-	yStride := width + 2*BORDER
-	uvStride := width/2 + 2*BORDER
-	yRows := height + 2*BORDER
-	uvRows := height/2 + 2*BORDER
+	return NewFrame16SS(width, height, bitDepth, 1, 1)
+}
+
+// NewFrame16SS allocates a zero-initialised 16-bit frame with chroma
+// subsampling shifts subX, subY (each 0 or 1).
+func NewFrame16SS(width, height, bitDepth, subX, subY int) *Frame16 {
+	// Planes are allocated for the even-rounded size; Width and Height keep
+	// the true picture size (see Frame).
+	allocW := width + width&subX
+	allocH := height + height&subY
+	yStride := allocW + 2*BORDER
+	uvStride := allocW>>uint(subX) + 2*BORDER
+	yRows := allocH + 2*BORDER
+	uvRows := allocH>>uint(subY) + 2*BORDER
 	return &Frame16{
 		Y:        make([]uint16, yRows*yStride),
 		U:        make([]uint16, uvRows*uvStride),
@@ -31,8 +37,16 @@ func NewFrame16(width, height, bitDepth int) *Frame16 {
 		Width:    width,
 		Height:   height,
 		BitDepth: bitDepth,
+		SubX:     subX,
+		SubY:     subY,
 	}
 }
+
+// UVWidth returns the visible width of the U and V planes.
+func (f *Frame16) UVWidth() int { return (f.Width + f.SubX) >> uint(f.SubX) }
+
+// UVHeight returns the visible height of the U and V planes.
+func (f *Frame16) UVHeight() int { return (f.Height + f.SubY) >> uint(f.SubY) }
 
 func (f *Frame16) YBase() int { return BORDER*f.YStride + BORDER }
 func (f *Frame16) UBase() int { return BORDER*f.UVStride + BORDER }
@@ -41,31 +55,44 @@ func (f *Frame16) VBase() int { return BORDER*f.UVStride + BORDER }
 // ExtendBorders16 replicates each visible edge into the border (see Frame).
 func ExtendBorders16(f *Frame16) {
 	extendPlane16(f.Y, f.Width, f.Height, f.YStride)
-	extendPlane16(f.U, f.Width/2, f.Height/2, f.UVStride)
-	extendPlane16(f.V, f.Width/2, f.Height/2, f.UVStride)
+	extendPlane16(f.U, f.UVWidth(), f.UVHeight(), f.UVStride)
+	extendPlane16(f.V, f.UVWidth(), f.UVHeight(), f.UVStride)
 }
 
 func extendPlane16(buf []uint16, width, height, stride int) {
 	base := BORDER*stride + BORDER
+	// The plane may be allocated wider/taller than the visible width×height
+	// (odd luma sizes are rounded up to even): replicate from the true edge
+	// out to the end of the allocation, as libvpx extends references from
+	// y_crop_width / y_crop_height.
+	right := stride - BORDER - width
+	bottom := len(buf)/stride - BORDER - height
+
+	// Left and right borders for each visible row.
 	for r := 0; r < height; r++ {
 		rowStart := base + r*stride
-		left := buf[rowStart]
-		right := buf[rowStart+width-1]
+		l := buf[rowStart]
+		e := buf[rowStart+width-1]
 		for i := 1; i <= BORDER; i++ {
-			buf[rowStart-i] = left
-			buf[rowStart+width-1+i] = right
+			buf[rowStart-i] = l
+		}
+		for i := 1; i <= right; i++ {
+			buf[rowStart+width-1+i] = e
 		}
 	}
+
+	// Top border rows from row 0 (including the extended left/right).
 	srcRow := base - BORDER
-	rowLen := width + 2*BORDER
 	for i := 1; i <= BORDER; i++ {
 		dstRow := srcRow - i*stride
-		copy(buf[dstRow:dstRow+rowLen], buf[srcRow:srcRow+rowLen])
+		copy(buf[dstRow:dstRow+stride], buf[srcRow:srcRow+stride])
 	}
+
+	// Bottom border rows from the last visible row.
 	lastRow := base + (height-1)*stride - BORDER
-	for i := 1; i <= BORDER; i++ {
+	for i := 1; i <= bottom; i++ {
 		dstRow := lastRow + i*stride
-		copy(buf[dstRow:dstRow+rowLen], buf[lastRow:lastRow+rowLen])
+		copy(buf[dstRow:dstRow+stride], buf[lastRow:lastRow+stride])
 	}
 }
 

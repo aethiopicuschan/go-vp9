@@ -118,28 +118,28 @@ func TestParamsForOutOfRange(t *testing.T) {
 // ---- ClampQIndex ------------------------------------------------------------
 
 func TestClampQIndexDelta(t *testing.T) {
-	p := Params{QIndexDelta: 5, AbsOrDelta: false}
+	p := Params{AltQ: true, QIndexDelta: 5, AbsOrDelta: false}
 	if got := ClampQIndex(100, p); got != 105 {
 		t.Fatalf("delta: got %d, want 105", got)
 	}
 }
 
 func TestClampQIndexAbsolute(t *testing.T) {
-	p := Params{QIndexDelta: 30, AbsOrDelta: true}
+	p := Params{AltQ: true, QIndexDelta: 30, AbsOrDelta: true}
 	if got := ClampQIndex(100, p); got != 30 {
 		t.Fatalf("absolute: got %d, want 30", got)
 	}
 }
 
 func TestClampQIndexUnderflow(t *testing.T) {
-	p := Params{QIndexDelta: -200, AbsOrDelta: false}
+	p := Params{AltQ: true, QIndexDelta: -200, AbsOrDelta: false}
 	if got := ClampQIndex(50, p); got != 0 {
 		t.Fatalf("underflow: got %d, want 0", got)
 	}
 }
 
 func TestClampQIndexOverflow(t *testing.T) {
-	p := Params{QIndexDelta: 200, AbsOrDelta: false}
+	p := Params{AltQ: true, QIndexDelta: 200, AbsOrDelta: false}
 	if got := ClampQIndex(100, p); got != 255 {
 		t.Fatalf("overflow: got %d, want 255", got)
 	}

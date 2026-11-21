@@ -1,0 +1,106 @@
+Generation of the integ_* regression streams (decoder/integ_stream_test.go).
+
+Reference format: integ_NAME.ref has one line per IVF packet, libvpx's verdict
+from the per-packet recorder in robust_vpxpk.c.txt (build instructions in
+robust_streams.txt), reduced with
+
+  ref() { vpxpk "$1" | awk '{ if ($2=="ERR") print "ERR"; else { $1=""; sub(/^ /,""); print } }'; }
+  ref integ_NAME.ivf > integ_NAME.ref
+
+i.e. "OK <md5> <w>x<h>" (frame output), "OK -" (decoded, nothing output) or
+"ERR". The md5 covers the Y, U, V planes at the true frame size in the stream's
+own chroma format (16-bit little-endian samples for high bit depth).
+
+== Odd frame sizes (TestIntegOddSizeStreams) ==
+
+  gen() {   # gen NAME SIZE PIX_FMT FRAMES
+    W=${2%x*}; H=${2#*x}
+    ffmpeg -y -v error -f lavfi -i "testsrc2=size=$2:rate=30,rotate=a=t/2:ow=$W:oh=$H" \
+      -frames:v $4 -c:v libvpx-vp9 -pix_fmt $3 -b:v 20k -qmin 10 -deadline good \
+      -cpu-used 1 -threads 1 -auto-alt-ref 0 -lag-in-frames 0 -f ivf integ_$1.ivf
+    ref integ_$1.ivf > integ_$1.ref
+  }
+  gen odd_420_65x64     65x64 yuv420p      3
+  gen odd_420_64x65     64x65 yuv420p      6
+  gen odd_422_65x64     65x64 yuv422p      3
+  gen odd_440_64x65     64x65 yuv440p      4
+  gen odd_420p10_65x64  65x64 yuv420p10le  3
+
+(The rotate filter with explicit ow/oh is what keeps the size odd; testsrc2
+alone rounds an odd size down.) 2.1-2.7 KB each.
+
+Before the fix (frames kept the size rounded up to even on subsampled axes and
+replicated reference borders from that rounded edge): every stream reported
+66x64 / 64x66, and compared over the true size the luma differed from libvpx
+on an inter frame: odd_420_65x64 frame 1, odd_420_64x65 frame 5, odd_422_65x64
+frame 2, odd_440_64x65 frame 2, odd_420p10_65x64 frame 1. After: all exact.
+
+== Coded quantizer deltas (TestIntegDeltaQStreams) ==
+
+  python3 integ_hdredit.py.txt deltaq fp0_1tile_key_inter.ivf integ_deltaq.ivf    -15 15 9
+  python3 integ_hdredit.py.txt deltaq sub8x8_profile2.ivf     integ_deltaq_p2.ivf  -2  3 -1
+  ref integ_deltaq.ivf > integ_deltaq.ref; ref integ_deltaq_p2.ivf > integ_deltaq_p2.ref
+
+(run in decoder/testdata; integ_hdredit.py.txt needs intraonly_vp9hdr.py next
+to it). Only the key frame's uncompressed header changes: delta_coded=1 plus a
+4-bit magnitude and a sign bit for each of y_dc, uv_dc, uv_ac. libvpx decodes
+both streams (2 packets each); the pictures differ from the source streams
+because the dequantisation steps do.
+
+Before the fix (delta read as 4-bit two's complement, one bit short): packet 0
+"corrupt compressed header", packet 1 rejected (resync). After: both exact.
+
+== Frame contexts reset by a rejected key frame (TestIntegContextResetOnRejectedHeader) ==
+
+  python3 integ_hdredit.py.txt trunc intraonly_reset1_adapt.ivf    integ_ctxreset_trunc12.ivf    0 12
+  python3 integ_hdredit.py.txt trunc intraonly_reset1_adapt.ivf    integ_ctxreset_trunc22.ivf    0 22
+  python3 integ_hdredit.py.txt trunc intraonly_reset1_adapt_p2.ivf integ_ctxreset_trunc22_p2.ivf 0 22
+  for n in trunc12 trunc22 trunc22_p2; do ref integ_ctxreset_$n.ivf > integ_ctxreset_$n.ref; done
+
+libvpx: packet 0 ERR ("Truncated packet" at 12 bytes, "Truncated packet or
+corrupt header length" at 22), packet 1 (superframe: hidden intra-only frame
+with reset_frame_context=1 + inter frame) decodes to its normal picture.
+
+  python3 integ_hdredit.py.txt xor intraonly_reset1_adapt.ivf integ_ctxreset_bigsize.ivf 0 4 04
+
+integ_ctxreset_bigsize: bit 2 of byte 4 of the key frame flipped, which makes
+its width 16512. libvpx rejects packet 0 ("Truncated packet or corrupt tile
+size") after the context reset; this decoder rejects it by its frame-size
+limit (DefaultMaxFrameSize), which is therefore applied after the reset too.
+
+Before the fix: packet 1 ERR "uninitialized entropy context" (the rejected key
+frame had not reset the frame contexts). After: as libvpx.
+
+== Packets without output (TestIntegNoOutputPackets) ==
+
+a[_p2].ivf and b_fp1[_p2].ivf are the source encodes of intraonly_streams.txt
+(one key frame of picture A; key + 4 inter frames of picture B).
+
+  python3 intraonly_vp9hdr.py build io_lone integ_lone_hidden.ivf    b_fp1.ivf    a.ivf
+  python3 intraonly_vp9hdr.py build io_lone integ_lone_hidden_p2.ivf b_fp1_p2.ivf a_p2.ivf
+  python3 integ_hdredit.py.txt trunc intraonly_show_existing.ivf    integ_showexisting_resync.ivf    1 10
+  python3 integ_hdredit.py.txt trunc intraonly_show_existing_p2.ivf integ_showexisting_resync_p2.ivf 1 10
+  (then ref X.ivf > X.ref for each)
+
+integ_lone_hidden: pkt0 A's key frame; pkt1 B's key frame re-headed as a
+hidden intra-only frame (reset_frame_context=3, refreshes all slots), alone in
+its packet; pkt2-5 B's inter frames. libvpx: OK, "OK -", OK x4 (5 pictures).
+Before: packet 1 returned the hidden frame (6 pictures). After: as libvpx.
+
+integ_showexisting_resync: pkt0 key frame; pkt1 inter frame cut to 10 bytes;
+pkt2 show_existing_frame of slot 0. libvpx: OK, ERR, "OK -". Before: packet 2
+returned the slot's picture. After: as libvpx.
+
+== Reference of another bit depth (TestIntegReferenceBitDepth) ==
+
+  python3 integ_hdredit.py.txt xor intraonly_reset2_keeprefs_p2.ivf integ_refdepth_p2.ivf 1 4 10
+  ref integ_refdepth_p2.ivf > integ_refdepth_p2.ref
+
+Bit 4 of byte 4 of packet 1 is the ten_or_twelve_bit flag of the hidden
+intra-only frame (refresh_frame_flags 0x06): it becomes a 12-bit frame while
+slot 0 keeps the 10-bit key frame. libvpx: packet 0 OK, packet 1 ERR
+("Referenced frame has incompatible color format", raised by the inter frame
+of the superframe), packets 2-4 ERR (resync).
+
+Before the fix: packets 1-4 decoded and returned pictures (12-bit prediction
+from a 10-bit reference). After: as libvpx.
